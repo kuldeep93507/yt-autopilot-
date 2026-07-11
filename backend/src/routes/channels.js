@@ -1,0 +1,235 @@
+import { Router } from "express";
+import { youtube as createYoutube } from "@googleapis/youtube";
+import { OAuth2Client } from "google-auth-library";
+import supabase from "../db/supabase.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+
+const router = Router();
+router.use(requireAuth);
+
+// Helper — build OAuth client for a channel
+function buildOAuth(ch) {
+  const oauth2 = new OAuth2Client(
+    ch.client_id  || process.env.GOOGLE_CLIENT_ID,
+    ch.client_secret || process.env.GOOGLE_CLIENT_SECRET
+  );
+  oauth2.setCredentials({ refresh_token: ch.refresh_token });
+  return oauth2;
+}
+
+// ── GET /api/channels ───────────────────────────────────────────────────────
+router.get("/", async (req, res) => {
+  const { data, error } = await supabase
+    .from("channels").select("*").order("created_at", { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  if (req.user.role !== "admin") {
+    data.forEach((c) => {
+      c.youtube_api_key = c.youtube_api_key ? "***" : null;
+      c.client_secret   = c.client_secret   ? "***" : null;
+      c.refresh_token   = c.refresh_token   ? "***" : null;
+    });
+  }
+  res.json(data);
+});
+
+// ── GET /api/channels/lookup?url= — auto-fill from YouTube URL ──────────────
+router.get("/lookup", async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: "url param required" });
+
+  // Extract handle or channel ID from URL
+  let identifier = null;
+  let idType = "forHandle";
+  const patterns = [
+    [/youtube\.com\/@([^/?&]+)/, "forHandle"],
+    [/youtube\.com\/c\/([^/?&]+)/, "forHandle"],
+    [/youtube\.com\/user\/([^/?&]+)/, "forUsername"],
+    [/youtube\.com\/channel\/(UC[^/?&]+)/, "id"],
+  ];
+  for (const [re, type] of patterns) {
+    const m = url.match(re);
+    if (m) { identifier = m[1]; idType = type; break; }
+  }
+  if (!identifier) return res.status(400).json({ error: "Valid YouTube channel URL nahi hai" });
+
+  try {
+    const oauth2 = new OAuth2Client(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET
+    );
+    // Use existing channel's refresh token if available
+    const { data: existingCh } = await supabase
+      .from("channels").select("refresh_token").not("refresh_token","is",null).limit(1).single();
+    if (existingCh?.refresh_token) oauth2.setCredentials({ refresh_token: existingCh.refresh_token });
+
+    const yt = createYoutube({ version: "v3", auth: oauth2 });
+    const params = { part: ["snippet","statistics","contentDetails"] };
+    if (idType === "id")        params.id = [identifier];
+    else if (idType === "forHandle")   params.forHandle = identifier;
+    else if (idType === "forUsername") params.forUsername = identifier;
+
+    const r = await yt.channels.list(params);
+    const ch = r.data.items?.[0];
+    if (!ch) return res.status(404).json({ error: "Channel nahi mila" });
+
+    res.json({
+      channel_id:   ch.id,
+      name:         ch.snippet.title,
+      description:  ch.snippet.description,
+      thumbnail:    ch.snippet.thumbnails?.default?.url,
+      subscribers:  ch.statistics.subscriberCount,
+      total_videos: ch.statistics.videoCount,
+      total_views:  ch.statistics.viewCount,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/channels/:id/videos — full stats + video list ─────────────────
+router.get("/:id/videos", async (req, res) => {
+  const { data: ch } = await supabase.from("channels").select("*").eq("id", req.params.id).single();
+  if (!ch) return res.status(404).json({ error: "Channel not found" });
+  if (!ch.refresh_token) return res.status(400).json({ error: "Channel has no OAuth token" });
+
+  try {
+    const yt = createYoutube({ version: "v3", auth: buildOAuth(ch) });
+
+    const chanRes = await yt.channels.list({
+      part: ["contentDetails","statistics","snippet"],
+      mine: true,
+    });
+    const item     = chanRes.data.items?.[0];
+    const stats    = item?.statistics || {};
+    const playlist = item?.contentDetails?.relatedPlaylists?.uploads;
+
+    let videos = [];
+    if (playlist) {
+      const plRes = await yt.playlistItems.list({
+        part: ["snippet","contentDetails"],
+        playlistId: playlist,
+        maxResults: 50,
+      });
+      const videoIds = (plRes.data.items || []).map(v => v.snippet.resourceId.videoId);
+
+      // Fetch duration + view count per video
+      let videoDetails = {};
+      if (videoIds.length) {
+        const detRes = await yt.videos.list({
+          part: ["statistics","contentDetails","status"],
+          id: videoIds,
+        });
+        detRes.data.items?.forEach(v => { videoDetails[v.id] = v; });
+      }
+
+      videos = (plRes.data.items || []).map((v) => {
+        const vid = v.snippet.resourceId.videoId;
+        const det = videoDetails[vid] || {};
+        const dur = det.contentDetails?.duration || "";
+        return {
+          id:           vid,
+          title:        v.snippet.title,
+          description:  v.snippet.description,
+          thumbnail:    v.snippet.thumbnails?.medium?.url,
+          published:    v.snippet.publishedAt,
+          views:        parseInt(det.statistics?.viewCount  || 0),
+          likes:        parseInt(det.statistics?.likeCount  || 0),
+          comments:     parseInt(det.statistics?.commentCount || 0),
+          privacy:      det.status?.privacyStatus || "public",
+          duration:     dur,
+        };
+      });
+    }
+
+    res.json({
+      total_videos:   parseInt(stats.videoCount    || 0),
+      total_views:    parseInt(stats.viewCount     || 0),
+      subscribers:    parseInt(stats.subscriberCount || 0),
+      hidden_subs:    stats.hiddenSubscriberCount  || false,
+      channel_name:   item?.snippet?.title         || ch.name,
+      recent_videos:  videos,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PATCH /api/channels/:id/yt-videos/:videoId — edit YT video metadata ────
+router.patch("/:id/yt-videos/:videoId", requireRole("admin","manager"), async (req, res) => {
+  const { data: ch } = await supabase.from("channels").select("*").eq("id", req.params.id).single();
+  if (!ch || !ch.refresh_token) return res.status(400).json({ error: "Channel not configured" });
+
+  const { title, description, tags, privacy } = req.body;
+  try {
+    const yt = createYoutube({ version: "v3", auth: buildOAuth(ch) });
+    // First get current snippet (categoryId required)
+    const cur = await yt.videos.list({ part: ["snippet","status"], id: [req.params.videoId] });
+    const existing = cur.data.items?.[0];
+    if (!existing) return res.status(404).json({ error: "Video not found on YouTube" });
+
+    const updated = await yt.videos.update({
+      part: ["snippet","status"],
+      requestBody: {
+        id: req.params.videoId,
+        snippet: {
+          title:       title       || existing.snippet.title,
+          description: description || existing.snippet.description,
+          tags:        tags ? tags.split(",").map(t => t.trim()) : existing.snippet.tags,
+          categoryId:  existing.snippet.categoryId || "22",
+        },
+        status: {
+          privacyStatus: privacy || existing.status.privacyStatus,
+          selfDeclaredMadeForKids: false,
+        },
+      },
+    });
+    res.json({ success: true, video: updated.data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE /api/channels/:id/yt-videos/:videoId — delete from YouTube ──────
+router.delete("/:id/yt-videos/:videoId", requireRole("admin"), async (req, res) => {
+  const { data: ch } = await supabase.from("channels").select("*").eq("id", req.params.id).single();
+  if (!ch || !ch.refresh_token) return res.status(400).json({ error: "Channel not configured" });
+  try {
+    const yt = createYoutube({ version: "v3", auth: buildOAuth(ch) });
+    await yt.videos.delete({ id: req.params.videoId });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/channels ──────────────────────────────────────────────────────
+router.post("/", requireRole("admin"), async (req, res) => {
+  const { name, niche, lang, youtube_api_key, client_id, client_secret,
+          refresh_token, drive_folder_id, drive_folder_name,
+          upload_time, privacy, auto_watch, watch_interval } = req.body;
+  const { data, error } = await supabase
+    .from("channels")
+    .insert([{ name, niche, lang, youtube_api_key, client_id, client_secret,
+               refresh_token, drive_folder_id, drive_folder_name,
+               upload_time, privacy, auto_watch, watch_interval }])
+    .select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+// ── PATCH /api/channels/:id ─────────────────────────────────────────────────
+router.patch("/:id", requireRole("admin","manager"), async (req, res) => {
+  const { data, error } = await supabase
+    .from("channels").update(req.body).eq("id", req.params.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// ── DELETE /api/channels/:id ────────────────────────────────────────────────
+router.delete("/:id", requireRole("admin"), async (req, res) => {
+  const { error } = await supabase.from("channels").delete().eq("id", req.params.id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ success: true });
+});
+
+export default router;

@@ -1,0 +1,988 @@
+> Mmb:
+import { useState, useEffect, useRef } from "react";
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+const TABS = ["🏠 Dashboard", "📺 Channels", "📁 Drive Watch", "🚀 Upload", "📅 Bulk Schedule", "👥 Team", "📊 Analytics", "⚙️ Settings"];
+const NICHES = ["Lo-fi Music","Meditation & Sleep","Ambient Sounds","Study Music","Nature Sounds","Motivational","Tech News","Finance","Gaming","Cooking","Education","Comedy","Other"];
+const LANGUAGES = ["Hindi","English","Hinglish","Punjabi","Tamil","Telugu","Bengali"];
+const PRIVACY = ["public","private","unlisted"];
+
+const defaultChannel = {
+  name:"", youtubeApiKey:"", clientId:"", clientSecret:"", refreshToken:"",
+  driveFolder:"", driveFolderName:"", niche:"", lang:"Hindi",
+  uploadTime:"10:00", privacy:"public", enabled:true, autoWatch:false,
+  watchInterval:5, lastChecked:null,
+};
+
+const COLORS = {
+  bg:"#080810", surface:"#12121e", card:"#1a1a2e", border:"#2a2a3e",
+  border2:"#3a3a5e", text:"#e2e8f0", muted:"#64748b", dim:"#94a3b8",
+  red:"#ef4444", blue:"#3b82f6", green:"#22c55e", yellow:"#f59e0b",
+  purple:"#8b5cf6", pink:"#ec4899", cyan:"#06b6d4",
+};
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+const now = () => new Date().toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" });
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+function useLocalStorage(key, init) {
+  const [val, setVal] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : init; }
+    catch { return init; }
+  });
+  const set = (v) => { setVal(v); try { localStorage.setItem(key, JSON.stringify(v)); } catch {} };
+  return [val, set];
+}
+
+// ─── STYLED PRIMITIVES ───────────────────────────────────────────────────────
+const Card = ({ children, style={}, glow }) => (
+  <div style={{
+    background: COLORS.card, border: 1px solid ${glow ? glow+"40" : COLORS.border},
+    borderRadius:14, padding:18, boxShadow: glow ? 0 0 20px ${glow}18 : "none", ...style
+  }}>{children}</div>
+);
+
+const Inp = ({ label, value, onChange, placeholder, type="text", mono }) => (
+  <div style={{ marginBottom:12 }}>
+    {label && <div style={{ fontSize:11, color:COLORS.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase", letterSpacing:0.5 }}>{label}</div>}
+    <input value={value} onChange={onChange} placeholder={placeholder} type={type}
+      style={{ width:"100%", background:COLORS.surface, border:1px solid ${COLORS.border2},
+        borderRadius:8, color: mono ? COLORS.cyan : COLORS.text, padding:"9px 12px",
+        fontSize: mono ? 12 : 13, boxSizing:"border-box", outline:"none",
+        fontFamily: mono ? "monospace" : "inherit" }} />
+  </div>
+);
+
+const Sel = ({ label, value, onChange, options }) => (
+  <div style={{ marginBottom:12 }}>
+    {label && <div style={{ fontSize:11, color:COLORS.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase", letterSpacing:0.5 }}>{label}</div>}
+    <select value={value} onChange={onChange}
+      style={{ width:"100%", background:COLORS.surface, border:1px solid ${COLORS.border2},
+        borderRadius:8, color:COLORS.text, padding:"9px 12px", fontSize:13 }}>
+      {options.map(o => typeof o === "string"
+        ? <option key={o} value={o}>{o}</option>
+        : <option key={o.v} value={o.v}>{o.l}</option>
+      )}
+    </select>
+  </div>
+);
+
+const Btn = ({ children, onClick, color=COLORS.blue, disabled, small, outline, full, style={} }) => (
+  <button onClick={onClick} disabled={disabled} style={{
+    padding: small ? "6px 12px" : "10px 18px", fontSize: small ? 12 : 13,
+    fontWeight:700, borderRadius:8, cursor: disabled ? "not-allowed" : "pointer",
+    border: outline ? 1px solid ${color} : "none",
+    background: disabled ? "#2a2a3e" : outline ? "transparent" : color,
+    color: disabled ? COLORS.muted : outline ? color : "#fff",
+    width: full ? "100%" : "auto", transition:"all 0.15s", opacity: disabled ? 0.6 : 1,
+    ...style
+  }}>{children}</button>
+);
+
+> Mmb:
+const Badge = ({ children, color=COLORS.blue }) => (
+  <span style={{ background:${color}22, color, border:1px solid ${color}44,
+    borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700 }}>{children}</span>
+);
+
+const Toggle = ({ value, onChange, label }) => (
+  <label style={{ display:"flex", alignItems:"center", gap:10, cursor:"pointer" }}>
+    <div onClick={() => onChange(!value)} style={{
+      width:40, height:22, borderRadius:11, background: value ? COLORS.green : COLORS.border2,
+      position:"relative", transition:"all 0.2s", flexShrink:0
+    }}>
+      <div style={{
+        position:"absolute", top:3, left: value ? 21 : 3, width:16, height:16,
+        borderRadius:"50%", background:"#fff", transition:"all 0.2s"
+      }} />
+    </div>
+    {label && <span style={{ fontSize:13, color:COLORS.dim }}>{label}</span>}
+  </label>
+);
+
+const SectionHead = ({ children, action }) => (
+  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+    <div style={{ fontWeight:800, fontSize:16, color:COLORS.text }}>{children}</div>
+    {action}
+  </div>
+);
+
+const Divider = () => <div style={{ borderTop:1px solid ${COLORS.border}, margin:"14px 0" }} />;
+
+const StatusDot = ({ status }) => {
+  const map = { queued:COLORS.yellow, processing:COLORS.blue, done:COLORS.green, error:COLORS.red, uploading:COLORS.cyan, detected:COLORS.purple };
+  return <span style={{ width:8, height:8, borderRadius:"50%", background: map[status]||COLORS.muted, display:"inline-block", marginRight:6, boxShadow:0 0 6px ${map[status]||COLORS.muted} }} />;
+};
+
+// ─── MAIN APP ────────────────────────────────────────────────────────────────
+export default function App() {
+  const [tab, setTab] = useState(0);
+  const [channels, setChannels] = useLocalStorage("ytap_channels", [
+    { ...defaultChannel, id:"ch1", name:"Channel 1", niche:"Lo-fi Music", enabled:true },
+    { ...defaultChannel, id:"ch2", name:"Channel 2", niche:"Meditation & Sleep", enabled:true },
+    { ...defaultChannel, id:"ch3", name:"Channel 3", niche:"Ambient Sounds", enabled:false },
+    { ...defaultChannel, id:"ch4", name:"Channel 4", niche:"Study Music", enabled:true },
+    { ...defaultChannel, id:"ch5", name:"Channel 5", niche:"Nature Sounds", enabled:true },
+  ]);
+  const [settings, setSettings] = useLocalStorage("ytap_settings", {
+    anthropicKey:"", elevenKey:"", adminName:"Admin", adminEmail:"", whatsapp:"",
+    emailDigest:false, whatsappAlerts:false, autoApprove:false,
+  });
+  const [queue, setQueue] = useLocalStorage("ytap_queue", []);
+  const [driveItems, setDriveItems] = useLocalStorage("ytap_drive", []);
+  const [team, setTeam] = useLocalStorage("ytap_team", [
+    { id:"t1", name:"Editor 1", role:"editor", channels:["ch1","ch2"], active:true },
+    { id:"t2", name:"Uploader", role:"uploader", channels:["ch1","ch2","ch3","ch4","ch5"], active:true },
+  ]);
+  const [logs, setLogs] = useLocalStorage("ytap_logs", [
+    { id:"l1", time:"09:12", ch:"Channel 1", status:"done", msg:"Video uploaded: 4hr Lo-fi Mix" },
+    { id:"l2", time:"08:45", ch:"Channel 2", status:"done", msg:"AI metadata generated" },
+    { id:"l3", time:"07:30", ch:"Channel 3", status:"queued", msg:"Video detected in Drive" },
+  ]);
+  const [notif, setNotif] = useState(null);
+  const [expandedCh, setExpandedCh] = useState(null);
+  const [watchActive, setWatchActive] = useState(false);
+  const watchRef = useRef(null);
+
+  // Upload form state
+  const [upState, setUpState] = useState({
+    channelId:"ch1", driveLink:"", title:"", description:"", tags:"",
+    schedDate:"", schedTime:"10:00", privacy:"public", aiLoading:false,
+  });
+
+  // Bulk schedule state
+  const [bulkItems, setBulkItems] = useState([
+    { id:uid(), channelId:"ch1", driveLink:"", title:"", schedDate:"", schedTime:"10:00", status:"empty" },
+  ]);
+
+  const toast = (msg, type="success") => {
+    setNotif({ msg, type });
+    setTimeout(() => setNotif(null), 3500);
+  };
+
+> Mmb:
+const addLog = (ch, status, msg) => {
+    setLogs(prev => [{ id:uid(), time:now(), ch, status, msg }, ...prev.slice(0,49)]);
+  };
+
+  // ── DRIVE WATCH ──
+  const startWatch = () => {
+    setWatchActive(true);
+    toast("🔍 Drive Watch shuru ho gaya!");
+    addLog("System", "done", "Drive Auto-Watch activated");
+    // Simulate detecting files every few seconds for demo
+    let count = 0;
+    watchRef.current = setInterval(() => {
+      count++;
+      if (count <= 3) {
+        const ch = channels.find(c => c.autoWatch && c.enabled) || channels[0];
+        const fakeFile = {
+          id: uid(), name:video_${Date.now()}.mp4,
+          channelId: ch?.id ⠺⠞⠺⠵⠟⠟⠟⠟⠺⠟⠟⠵⠞⠞⠵⠟⠺⠵⠟⠞⠵⠟⠵⠞⠺⠟⠵⠞⠵⠟ "Channel 1",
+          detectedAt: now(), size:"2.4 GB", status:"detected",
+          driveLink:https://drive.google.com/file/d/fake_${uid()}/view,
+        };
+        setDriveItems(prev => [fakeFile, ...prev]);
+        addLog(ch?.name || "Channel 1", "detected", New file detected: ${fakeFile.name});
+      }
+    }, 8000);
+  };
+
+  const stopWatch = () => {
+    setWatchActive(false);
+    if (watchRef.current) clearInterval(watchRef.current);
+    toast("Drive Watch stopped", "warn");
+    addLog("System", "error", "Drive Auto-Watch stopped");
+  };
+
+  useEffect(() => () => { if (watchRef.current) clearInterval(watchRef.current); }, []);
+
+  // ── AI GENERATE ──
+  const generateAI = async () => {
+    if (!settings.anthropicKey) { toast("Settings mein Anthropic API key daalo", "error"); return; }
+    const ch = channels.find(c => c.id === upState.channelId);
+    setUpState(p => ({ ...p, aiLoading:true }));
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "x-api-key": settings.anthropicKey,
+          "anthropic-version":"2023-06-01",
+          "anthropic-dangerous-direct-browser-access":"true",
+        },
+        body: JSON.stringify({
+          model:"claude-sonnet-4-6", max_tokens:1000,
+          messages:[{ role:"user", content:
+            You are a YouTube SEO expert. Generate optimized metadata for a ${ch?.niche || "general"} YouTube channel.
+Language: ${ch?.lang || "Hindi"}
+
+Respond EXACTLY in this format (no extra text):
+TITLE: [catchy title max 70 chars]
+DESCRIPTION: [200 word SEO description with emojis, timestamps placeholder, subscribe CTA]
+TAGS: [15 comma-separated tags] }]
+        })
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.[0]?.text || "";
+      const t = text.match(/TITLE:\s*(.+)/)?.[1]?.trim() || "";
+      const d = text.match(/DESCRIPTION:\s*([\s\S]+?)(?=TAGS:|$)/)?.[1]?.trim() || "";
+      const g = text.match(/TAGS:\s*(.+)/)?.[1]?.trim() || "";
+      setUpState(p => ({ ...p, title:t, description:d, tags:g, aiLoading:false }));
+      addLog(ch?.name, "done", AI metadata generated: "${t}");
+      toast("✨ AI ne metadata generate kar diya!");
+    } catch(e) {
+      toast("AI error: " + e.message, "error");
+      addLog("AI", "error", e.message);
+      setUpState(p => ({ ...p, aiLoading:false }));
+    }
+  };
+
+  // ── ADD TO QUEUE ──
+  const addToQueue = () => {
+    if (!upState.driveLink) { toast("Drive link daalo", "error"); return; }
+    if (!upState.title) { toast("Title chahiye (AI se generate karo)", "error"); return; }
+    const ch = channels.find(c => c.id === upState.channelId);
+    const item = {
+      id:uid(), channelId:upState.channelId, channelName:ch?.name,
+      driveLink:upState.driveLink, title:upState.title,
+      description:upState.description, tags:upState.tags,
+      schedDate:upState.schedDate, schedTime:upState.schedTime,
+      privacy:upState.privacy, status:"queued", addedAt:now(),
+      approved: settings.autoApprove,
+    };
+    setQueue(prev => [item, ...prev]);
+    addLog(ch?.name, "queued", Queued: "${upState.title}");
+    toast("✅ Video queue mein add ho gayi!");
+    setUpState(p => ({ ...p, driveLink:"", title:"", description:"", tags:"", schedDate:"" }));
+  };
+
+> Mmb:
+// ── SIMULATE UPLOAD ──
+  const doUpload = (id) => {
+    setQueue(prev => prev.map(v => v.id===id ? {...v, status:"uploading"} : v));
+    const item = queue.find(v => v.id===id);
+    setTimeout(() => {
+      setQueue(prev => prev.map(v => v.id===id ? {...v, status:"done", doneAt:now()} : v));
+      addLog(item?.channelName, "done", Uploaded: "${item?.title}");
+      toast(✅ "${item?.title}" YouTube pe live!);
+    }, 3500);
+  };
+
+  const removeQueue = (id) => setQueue(prev => prev.filter(v => v.id!==id));
+  const approveQueue = (id) => setQueue(prev => prev.map(v => v.id===id ? {...v, approved:true} : v));
+
+  const addDriveToQueue = (item) => {
+    const ch = channels.find(c => c.id===item.channelId);
+    const qItem = {
+      id:uid(), channelId:item.channelId, channelName:ch?.name,
+      driveLink:item.driveLink, title:item.name.replace(".mp4",""),
+      description:"", tags:"", schedDate:"", schedTime:ch?.uploadTime||"10:00",
+      privacy:ch?.privacy||"public", status:"queued", addedAt:now(), approved:false,
+    };
+    setQueue(prev => [qItem, ...prev]);
+    setDriveItems(prev => prev.map(d => d.id===item.id ? {...d, status:"queued"} : d));
+    toast("✅ Drive video queue mein add ho gayi!");
+  };
+
+  // ── BULK ADD ──
+  const addBulkRow = () => setBulkItems(prev => [...prev, { id:uid(), channelId:"ch1", driveLink:"", title:"", schedDate:"", schedTime:"10:00", status:"empty" }]);
+  const removeBulkRow = (id) => setBulkItems(prev => prev.filter(r => r.id!==id));
+  const updateBulk = (id, field, val) => setBulkItems(prev => prev.map(r => r.id===id ? {...r,[field]:val} : r));
+  const submitBulk = () => {
+    const valid = bulkItems.filter(r => r.driveLink && r.title);
+    if (!valid.length) { toast("Kam se kam ek complete row chahiye", "error"); return; }
+    const newItems = valid.map(r => {
+      const ch = channels.find(c => c.id===r.channelId);
+      return { id:uid(), channelId:r.channelId, channelName:ch?.name,
+        driveLink:r.driveLink, title:r.title, description:"", tags:"",
+        schedDate:r.schedDate, schedTime:r.schedTime, privacy:"public",
+        status:"queued", addedAt:now(), approved:settings.autoApprove };
+    });
+    setQueue(prev => [...newItems, ...prev]);
+    toast(✅ ${valid.length} videos bulk queue mein add ho gayi!);
+    addLog("Bulk", "done", ${valid.length} videos bulk scheduled);
+    setBulkItems([{ id:uid(), channelId:"ch1", driveLink:"", title:"", schedDate:"", schedTime:"10:00", status:"empty" }]);
+  };
+
+  // ── CHANNEL HELPERS ──
+  const updateCh = (id, field, val) => setChannels(prev => prev.map(c => c.id===id ? {...c,[field]:val} : c));
+  const addChannel = () => {
+    const id = "ch"+uid();
+    setChannels(prev => [...prev, { ...defaultChannel, id, name:Channel ${prev.length+1} }]);
+    toast("✅ Naya channel add hua!");
+  };
+  const removeCh = (id) => {
+    if (channels.length <= 1) { toast("Kam se kam 1 channel chahiye", "error"); return; }
+    setChannels(prev => prev.filter(c => c.id!==id));
+  };
+
+  // ── STATS ──
+  const activeCount = channels.filter(c => c.enabled).length;
+  const queuedCount = queue.filter(v => v.status==="queued").length;
+  const doneCount = queue.filter(v => v.status==="done").length;
+  const driveDetected = driveItems.filter(d => d.status==="detected").length;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  return (
+    <div style={{ fontFamily:"'Inter',system-ui,sans-serif", background:COLORS.bg, minHeight:"100vh", color:COLORS.text }}>
+
+      {/* TOAST */}
+      {notif && (
+        <div style={{
+          position:"fixed", top:20, right:20, zIndex:9999,
+          background: notif.type==="error" ? COLORS.red : notif.type==="warn" ? COLORS.yellow : COLORS.green,
+          color:"#fff", padding:"12px 20px", borderRadius:10, fontWeight:700, fontSize:13,
+          boxShadow:"0 8px 32px rgba(0,0,0,0.5)", maxWidth:320, lineHeight:1.4,
+        }}>{notif.msg}</div>
+      )}
+
+> Mmb:
+{/* HEADER */}
+      <div style={{ background:"#0d0d1a", borderBottom:1px solid ${COLORS.border}, padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:100 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:38, height:38, background:"linear-gradient(135deg,#ff0000,#cc0000)", borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:900, boxShadow:"0 0 16px #ff000044" }}>▶</div>
+          <div>
+            <div style={{ fontWeight:900, fontSize:17, color:"#fff", letterSpacing:-0.5 }}>YT AutoPilot <span style={{ color:COLORS.purple, fontSize:12, background:${COLORS.purple}22, padding:"1px 7px", borderRadius:5, marginLeft:4, fontWeight:700 }}>V2</span></div>
+            <div style={{ fontSize:11, color:COLORS.muted }}>Multi-Channel YouTube Automation Platform</div>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:20, alignItems:"center" }}>
+          {[
+            { label:"Channels", val:activeCount, color:COLORS.blue },
+            { label:"Queue", val:queuedCount, color:COLORS.yellow },
+            { label:"Uploaded", val:doneCount, color:COLORS.green },
+            { label:"Drive", val:driveDetected, color:COLORS.purple },
+          ].map(s => (
+            <div key={s.label} style={{ textAlign:"center" }}>
+              <div style={{ fontSize:18, fontWeight:900, color:s.color, lineHeight:1 }}>{s.val}</div>
+              <div style={{ fontSize:10, color:COLORS.muted, marginTop:2 }}>{s.label}</div>
+            </div>
+          ))}
+          <div style={{ width:8, height:8, borderRadius:"50%", background: watchActive ? COLORS.green : COLORS.border2, boxShadow: watchActive ? 0 0 8px ${COLORS.green} : "none" }} title={watchActive ? "Watch Active" : "Watch Off"} />
+        </div>
+      </div>
+
+      {/* TABS */}
+      <div style={{ background:"#0d0d1a", borderBottom:1px solid ${COLORS.border}, padding:"0 20px", display:"flex", gap:2, overflowX:"auto" }}>
+        {TABS.map((t,i) => (
+          <button key={t} onClick={() => setTab(i)} style={{
+            padding:"11px 14px", background:"none", border:"none", cursor:"pointer",
+            color: tab===i ? COLORS.blue : COLORS.muted,
+            borderBottom: tab===i ? 2px solid ${COLORS.blue} : "2px solid transparent",
+            fontWeight: tab===i ? 800 : 500, fontSize:12, whiteSpace:"nowrap", transition:"all 0.15s"
+          }}>{t}</button>
+        ))}
+      </div>
+
+      {/* CONTENT */}
+      <div style={{ padding:24, maxWidth:1140, margin:"0 auto" }}>
+
+        {/* ── 0: DASHBOARD ── */}
+        {tab===0 && (
+          <div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14, marginBottom:20 }}>
+              {[
+                { label:"Total Channels", val:channels.length, color:COLORS.blue, icon:"📺" },
+                { label:"Active Channels", val:activeCount, color:COLORS.green, icon:"✅" },
+                { label:"Videos Uploaded", val:doneCount, color:COLORS.cyan, icon:"🎬" },
+                { label:"In Queue", val:queuedCount, color:COLORS.yellow, icon:"⏳" },
+              ].map(s => (
+                <Card key={s.label} glow={s.color}>
+                  <div style={{ fontSize:22, marginBottom:6 }}>{s.icon}</div>
+                  <div style={{ fontSize:30, fontWeight:900, color:s.color, lineHeight:1 }}>{s.val}</div>
+                  <div style={{ fontSize:12, color:COLORS.muted, marginTop:4 }}>{s.label}</div>
+                </Card>
+              ))}
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr", gap:16 }}>
+              <div>
+                <SectionHead>📺 Channels Overview</SectionHead>
+
+> Mmb:
+<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                  {channels.map(ch => (
+                    <Card key={ch.id}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                        <div>
+                          <div style={{ fontWeight:800, fontSize:14, color:COLORS.text }}>{ch.name}</div>
+                          <div style={{ fontSize:11, color:COLORS.muted, marginTop:2 }}>{ch.niche || "No niche"}</div>
+                        </div>
+                        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+                          <Badge color={ch.enabled ? COLORS.green : COLORS.muted}>{ch.enabled ? "Active" : "Off"}</Badge>
+                          {ch.autoWatch && <Badge color={COLORS.purple}>👁 Watching</Badge>}
+                        </div>
+                      </div>
+                      <Divider />
+                      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                        <Badge color={ch.youtubeApiKey ? COLORS.green : COLORS.red}>{ch.youtubeApiKey ? "✓ API" : "✗ API"}</Badge>
+                        <Badge color={ch.driveFolder ? COLORS.green : COLORS.red}>{ch.driveFolder ? "✓ Drive" : "✗ Drive"}</Badge>
+                        <Badge color={COLORS.cyan}>{ch.uploadTime}</Badge>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <SectionHead>📋 Activity Log</SectionHead>
+                <Card style={{ maxHeight:380, overflowY:"auto" }}>
+                  {logs.map((l,i) => (
+                    <div key={l.id} style={{ paddingBottom:10, marginBottom: i<logs.length-1?10:0, borderBottom: i<logs.length-1?1px solid ${COLORS.border}:"none" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                        <StatusDot status={l.status} />
+                        <span style={{ fontSize:12, color:COLORS.text, lineHeight:1.4 }}>{l.msg}</span>
+                      </div>
+                      <div style={{ fontSize:10, color:COLORS.muted, marginTop:3, paddingLeft:14 }}>{l.ch} • {l.time}</div>
+                    </div>
+                  ))}
+                </Card>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── 1: CHANNELS ── */}
+        {tab===1 && (
+          <div>
+            <SectionHead action={<Btn onClick={addChannel} color={COLORS.blue}>+ Add Channel</Btn>}>📺 Channel Settings</SectionHead>
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              {channels.map(ch => (
+                <Card key={ch.id} glow={ch.enabled ? COLORS.blue : null}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <div style={{ width:34, height:34, background:"linear-gradient(135deg,#ff0000,#880000)", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}>▶</div>
+                      <div>
+                        <div style={{ fontWeight:800, fontSize:15 }}>{ch.name}</div>
+                        <div style={{ fontSize:11, color:COLORS.muted }}>{ch.niche} • {ch.lang} • {ch.uploadTime}</div>
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                      <Toggle value={ch.enabled} onChange={v => updateCh(ch.id,"enabled",v)} label="Active" />
+                      <Btn small outline color={COLORS.blue} onClick={() => setExpandedCh(expandedCh===ch.id?null:ch.id)}>
+                        {expandedCh===ch.id ? "▲ Close" : "⚙ Configure"}
+                      </Btn>
+                      <Btn small outline color={COLORS.red} onClick={() => removeCh(ch.id)}>✕</Btn>
+                    </div>
+                  </div>
+
+> Mmb:
+{expandedCh===ch.id && (
+                    <div style={{ marginTop:16 }}>
+                      <Divider />
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12 }}>
+                        <Inp label="Channel Name" value={ch.name} onChange={e => updateCh(ch.id,"name",e.target.value)} placeholder="My Channel" />
+                        <Sel label="Niche" value={ch.niche} onChange={e => updateCh(ch.id,"niche",e.target.value)} options={["", ...NICHES]} />
+                        <Sel label="Language" value={ch.lang} onChange={e => updateCh(ch.id,"lang",e.target.value)} options={LANGUAGES} />
+                        <Inp label="YouTube API Key" value={ch.youtubeApiKey} onChange={e => updateCh(ch.id,"youtubeApiKey",e.target.value)} placeholder="AIza..." type="password" mono />
+                        <Inp label="OAuth Client ID" value={ch.clientId} onChange={e => updateCh(ch.id,"clientId",e.target.value)} placeholder="xxx.apps.googleusercontent.com" mono />
+                        <Inp label="OAuth Client Secret" value={ch.clientSecret} onChange={e => updateCh(ch.id,"clientSecret",e.target.value)} placeholder="GOCSPX-..." type="password" mono />
+                        <Inp label="Refresh Token" value={ch.refreshToken} onChange={e => updateCh(ch.id,"refreshToken",e.target.value)} placeholder="OAuth refresh token" type="password" mono />
+                        <Inp label="Drive Folder ID" value={ch.driveFolder} onChange={e => updateCh(ch.id,"driveFolder",e.target.value)} placeholder="1BxiMVs0XRA5nFM..." mono />
+                        <Inp label="Drive Folder Name" value={ch.driveFolderName} onChange={e => updateCh(ch.id,"driveFolderName",e.target.value)} placeholder="Channel 1 Videos" />
+                        <Inp label="Default Upload Time" value={ch.uploadTime} onChange={e => updateCh(ch.id,"uploadTime",e.target.value)} type="time" />
+                        <Sel label="Privacy" value={ch.privacy} onChange={e => updateCh(ch.id,"privacy",e.target.value)} options={PRIVACY} />
+                        <div>
+                          <div style={{ fontSize:11, color:COLORS.muted, fontWeight:700, marginBottom:8, textTransform:"uppercase", letterSpacing:0.5 }}>Auto Watch</div>
+                          <Toggle value={ch.autoWatch} onChange={v => updateCh(ch.id,"autoWatch",v)} label="Drive Auto-Watch enable karo" />
+                          {ch.autoWatch && (
+                            <div style={{ marginTop:8 }}>
+                              <Inp label="Check interval (minutes)" value={ch.watchInterval} onChange={e => updateCh(ch.id,"watchInterval",e.target.value)} placeholder="5" />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ marginTop:8, padding:10, background:COLORS.surface, borderRadius:8, fontSize:12, color:COLORS.muted }}>
+                        💡 <strong style={{ color:COLORS.text }}>Drive Folder ID kaise milega?</strong> Drive folder open karo → URL mein /folders/ ke baad jo ID hai wo copy karo
+                      </div>
+                    </div>
+                  )}
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── 2: DRIVE WATCH ── */}
+        {tab===2 && (
+          <div>
+            <SectionHead>📁 Google Drive Auto-Watch</SectionHead>
+
+            <Card glow={watchActive ? COLORS.green : null} style={{ marginBottom:16 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ fontWeight:800, fontSize:15, marginBottom:4 }}>
+                    {watchActive ? <span style={{ color:COLORS.green }}>● Drive Watch ACTIVE</span> : <span style={{ color:COLORS.muted }}>○ Drive Watch OFF</span>}
+
+> Mmb:
+</div>
+                  <div style={{ fontSize:12, color:COLORS.muted }}>
+                    {watchActive
+                      ? "System team ke Drive folder ko monitor kar raha hai — nayi video milegi toh auto-detect karega"
+                      : "Start karo — Drive folders automatically monitor honge"
+                    }
+                  </div>
+                </div>
+                {watchActive
+                  ? <Btn onClick={stopWatch} color={COLORS.red}>⏹ Stop Watch</Btn>
+                  : <Btn onClick={startWatch} color={COLORS.green}>▶ Start Watch</Btn>
+                }
+              </div>
+
+              {watchActive && (
+                <div style={{ marginTop:14, display:"flex", gap:10, flexWrap:"wrap" }}>
+                  {channels.filter(c => c.autoWatch).map(ch => (
+                    <Badge key={ch.id} color={COLORS.green}>👁 {ch.name} — {ch.driveFolderName ⠺⠺⠟⠺⠞⠟⠺⠞⠺⠞⠟⠞⠟⠺⠵⠵ "Folder"}</Badge>
+                  ))}
+                  {!channels.some(c => c.autoWatch) && (
+                    <span style={{ fontSize:12, color:COLORS.yellow }}>⚠️ Koi channel auto-watch enable nahi — Channels tab mein jaake enable karo</span>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            <SectionHead>🆕 Detected Videos ({driveItems.filter(d=>d.status==="detected").length})</SectionHead>
+            {driveItems.length === 0 ? (
+              <Card style={{ textAlign:"center", padding:40, color:COLORS.muted }}>
+                <div style={{ fontSize:36, marginBottom:10 }}>👁</div>
+                <div style={{ fontWeight:700 }}>Abhi koi file detect nahi hui</div>
+                <div style={{ fontSize:12, marginTop:4 }}>Drive Watch start karo — team ne jo bhi video daali wo yahan aayegi</div>
+              </Card>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {driveItems.map(item => (
+                  <Card key={item.id}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                          <StatusDot status={item.status} />
+                          <span style={{ fontWeight:700, fontSize:13 }}>{item.name}</span>
+                          <Badge color={item.status==="detected" ? COLORS.purple : COLORS.green}>{item.status}</Badge>
+                        </div>
+                        <div style={{ fontSize:11, color:COLORS.muted }}>
+                          📺 {item.channelName} • 📦 {item.size} • 🕐 {item.detectedAt}
+                        </div>
+                      </div>
+                      <div style={{ display:"flex", gap:8 }}>
+                        {item.status==="detected" && (
+                          <Btn small color={COLORS.blue} onClick={() => addDriveToQueue(item)}>➕ Queue Add</Btn>
+                        )}
+                        {item.status==="queued" && <Badge color={COLORS.yellow}>In Queue</Badge>}
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+
+            <Card style={{ marginTop:16 }}>
+              <div style={{ fontWeight:700, marginBottom:10, color:COLORS.cyan }}>🔧 How It Works (Production Setup)</div>
+              <div style={{ fontSize:12, color:COLORS.dim, lineHeight:1.8 }}>
+                <div>1️⃣ Team member Google Drive folder mein video upload kare</div>
+                <div>2️⃣ System har {channels.find(c=>c.autoWatch)?.watchInterval || 5} minute mein Drive API check kare</div>
+                <div>3️⃣ Nayi file milne par auto-detect aur yahan list kare</div>
+
+> Mmb:
+<div>4️⃣ AI automatically title/description/tags generate kare</div>
+                <div>5️⃣ Approval ke baad YouTube pe schedule/upload ho jaaye</div>
+                <Divider />
+                <div style={{ color:COLORS.yellow }}>⚠️ Production mein: Python backend + Google Drive API v3 + Webhook chahiye. Yeh dashboard UI sirf demo mode mein hai.</div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ── 3: UPLOAD ── */}
+        {tab===3 && (
+          <div>
+            <SectionHead>🚀 Manual Upload</SectionHead>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+              <div>
+                <Card style={{ marginBottom:14 }}>
+                  <div style={{ fontWeight:700, color:COLORS.blue, marginBottom:14 }}>Step 1 — Channel & Video</div>
+                  <Sel label="Select Channel" value={upState.channelId}
+                    onChange={e => setUpState(p => ({...p, channelId:e.target.value}))}
+                    options={channels.map(c => ({ v:c.id, l:${c.name} — ${c.niche} }))} />
+                  <Inp label="Google Drive Video Link" value={upState.driveLink}
+                    onChange={e => setUpState(p => ({...p, driveLink:e.target.value}))}
+                    placeholder="https://drive.google.com/file/d/..." mono />
+                  <div style={{ padding:10, background:COLORS.surface, borderRadius:8, fontSize:11, color:COLORS.muted }}>
+                    💡 Team Drive folder mein video daale → Share link copy karo → Paste karo
+                  </div>
+                </Card>
+
+                <Card>
+                  <div style={{ fontWeight:700, color:COLORS.purple, marginBottom:14 }}>Step 2 — AI Metadata</div>
+                  <Btn full color={COLORS.purple} disabled={upState.aiLoading} onClick={generateAI}>
+                    {upState.aiLoading ? "⏳ AI generate kar raha hai..." : "✨ Claude AI se Metadata Generate Karo"}
+                  </Btn>
+                  <div style={{ fontSize:11, color:COLORS.muted, marginTop:8, textAlign:"center" }}>
+                    SEO-optimized title, description aur 15 tags auto-generate honge
+                  </div>
+                </Card>
+              </div>
+
+              <div>
+                <Card style={{ marginBottom:14 }}>
+                  <div style={{ fontWeight:700, color:COLORS.cyan, marginBottom:14 }}>Step 3 — Review Metadata</div>
+                  <Inp label="Video Title" value={upState.title}
+                    onChange={e => setUpState(p => ({...p, title:e.target.value}))}
+                    placeholder="AI generate karega ya manually likhao" />
+                  <div style={{ marginBottom:12 }}>
+                    <div style={{ fontSize:11, color:COLORS.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase", letterSpacing:0.5 }}>Description</div>
+                    <textarea value={upState.description}
+                      onChange={e => setUpState(p => ({...p, description:e.target.value}))}
+                      placeholder="AI generate karega..."
+                      style={{ width:"100%", background:COLORS.surface, border:1px solid ${COLORS.border2},
+                        borderRadius:8, color:COLORS.text, padding:"9px 12px", fontSize:12,
+                        minHeight:110, resize:"vertical", boxSizing:"border-box", fontFamily:"inherit" }} />
+                  </div>
+                  <Inp label="Tags (comma separated)" value={upState.tags}
+                    onChange={e => setUpState(p => ({...p, tags:e.target.value}))}
+                    placeholder="lofi, music, study, chill..." />
+                </Card>
+
+                <Card>
+                  <div style={{ fontWeight:700, color:COLORS.green, marginBottom:14 }}>Step 4 — Schedule & Queue</div>
+
+> Mmb:
+<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                    <Inp label="Schedule Date" value={upState.schedDate}
+                      onChange={e => setUpState(p => ({...p, schedDate:e.target.value}))} type="date" />
+                    <Inp label="Schedule Time" value={upState.schedTime}
+                      onChange={e => setUpState(p => ({...p, schedTime:e.target.value}))} type="time" />
+                  </div>
+                  <Sel label="Privacy" value={upState.privacy}
+                    onChange={e => setUpState(p => ({...p, privacy:e.target.value}))}
+                    options={PRIVACY} />
+                  <Btn full color={COLORS.green} onClick={addToQueue}>✅ Queue Mein Add Karo</Btn>
+                </Card>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── 4: BULK SCHEDULE ── */}
+        {tab===4 && (
+          <div>
+            <SectionHead action={
+              <div style={{ display:"flex", gap:8 }}>
+                <Btn small onClick={addBulkRow} color={COLORS.blue}>+ Row Add</Btn>
+                <Btn small onClick={submitBulk} color={COLORS.green}>✅ Sab Queue Karo</Btn>
+              </div>
+            }>📅 Bulk Schedule — Multiple Videos Ek Saath</SectionHead>
+
+            <Card style={{ marginBottom:14, padding:12 }}>
+              <div style={{ fontSize:12, color:COLORS.muted }}>
+                💡 Ek hafte ki videos ek baar mein schedule karo — Drive link + title + time daao, sab ek click mein queue ho jaayenge
+              </div>
+            </Card>
+
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ borderBottom:1px solid ${COLORS.border} }}>
+                    {["#","Channel","Drive Link","Title","Date","Time",""].map(h => (
+                      <th key={h} style={{ padding:"8px 10px", color:COLORS.muted, fontWeight:700, textAlign:"left", fontSize:11, textTransform:"uppercase" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {bulkItems.map((row, i) => (
+                    <tr key={row.id} style={{ borderBottom:1px solid ${COLORS.border} }}>
+                      <td style={{ padding:"8px 10px", color:COLORS.muted }}>{i+1}</td>
+                      <td style={{ padding:"4px 8px" }}>
+                        <select value={row.channelId} onChange={e => updateBulk(row.id,"channelId",e.target.value)}
+                          style={{ background:COLORS.surface, border:1px solid ${COLORS.border2}, borderRadius:6, color:COLORS.text, padding:"6px 8px", fontSize:12, width:130 }}>
+                          {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ padding:"4px 8px" }}>
+                        <input value={row.driveLink} onChange={e => updateBulk(row.id,"driveLink",e.target.value)}
+                          placeholder="drive.google.com/..."
+                          style={{ background:COLORS.surface, border:1px solid ${COLORS.border2}, borderRadius:6, color:COLORS.cyan, padding:"6px 8px", fontSize:11, width:180, fontFamily:"monospace" }} />
+                      </td>
+                      <td style={{ padding:"4px 8px" }}>
+                        <input value={row.title} onChange={e => updateBulk(row.id,"title",e.target.value)}
+                          placeholder="Video title..."
+                          style={{ background:COLORS.surface, border:1px solid ${COLORS.border2}, borderRadius:6, color:COLORS.text, padding:"6px 8px", fontSize:12, width:180 }} />
+                      </td>
+
+> Mmb:
+<td style={{ padding:"4px 8px" }}>
+                        <input type="date" value={row.schedDate} onChange={e => updateBulk(row.id,"schedDate",e.target.value)}
+                          style={{ background:COLORS.surface, border:1px solid ${COLORS.border2}, borderRadius:6, color:COLORS.text, padding:"6px 8px", fontSize:12 }} />
+                      </td>
+                      <td style={{ padding:"4px 8px" }}>
+                        <input type="time" value={row.schedTime} onChange={e => updateBulk(row.id,"schedTime",e.target.value)}
+                          style={{ background:COLORS.surface, border:1px solid ${COLORS.border2}, borderRadius:6, color:COLORS.text, padding:"6px 8px", fontSize:12 }} />
+                      </td>
+                      <td style={{ padding:"4px 8px" }}>
+                        <Btn small outline color={COLORS.red} onClick={() => removeBulkRow(row.id)}>✕</Btn>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <Divider />
+            <SectionHead action={<Badge color={COLORS.yellow}>{queue.length} total</Badge>}>⏳ Upload Queue</SectionHead>
+            {queue.length === 0 ? (
+              <Card style={{ textAlign:"center", padding:30, color:COLORS.muted }}>
+                <div style={{ fontSize:32, marginBottom:8 }}>📭</div>
+                <div>Queue empty hai — Upload ya Bulk Schedule se add karo</div>
+              </Card>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {queue.map(item => (
+                  <Card key={item.id}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                          <StatusDot status={item.status} />
+                          <span style={{ fontWeight:700, fontSize:13 }}>{item.title || "(No title)"}</span>
+                          {!item.approved && <Badge color={COLORS.yellow}>⏳ Approval Pending</Badge>}
+                          {item.approved && item.status==="queued" && <Badge color={COLORS.green}>✓ Approved</Badge>}
+                        </div>
+                        <div style={{ fontSize:11, color:COLORS.muted }}>
+                          📺 {item.channelName} • 📅 {item.schedDate||"Aaj"} {item.schedTime} • 🔒 {item.privacy} • ⏰ {item.addedAt}
+                        </div>
+                      </div>
+                      <div style={{ display:"flex", gap:6 }}>
+                        {!item.approved && <Btn small color={COLORS.yellow} onClick={() => approveQueue(item.id)}>✓ Approve</Btn>}
+                        {item.approved && item.status==="queued" && <Btn small color={COLORS.blue} onClick={() => doUpload(item.id)}>▶ Upload</Btn>}
+                        {item.status==="uploading" && <Badge color={COLORS.cyan}>🔄 Uploading...</Badge>}
+                        {item.status==="done" && <Badge color={COLORS.green}>✅ Done</Badge>}
+                        <Btn small outline color={COLORS.red} onClick={() => removeQueue(item.id)}>✕</Btn>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── 5: TEAM ── */}
+        {tab===5 && (
+          <div>
+            <SectionHead action={
+              <Btn color={COLORS.blue} onClick={() => {
+                const m = { id:"t"+uid(), name:"New Member", role:"editor", channels:[], active:true };
+                setTeam(prev => [...prev, m]);
+              }}>+ Add Member</Btn>
+            }>👥 Team Management</SectionHead>
+
+> Mmb:
+<div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:12, marginBottom:20 }}>
+              {team.map(m => (
+                <Card key={m.id} glow={m.active ? COLORS.blue : null}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <div style={{ width:36, height:36, borderRadius:"50%", background:linear-gradient(135deg,${COLORS.blue},${COLORS.purple}), display:"flex", alignItems:"center", justifyContent:"center", fontWeight:900, fontSize:14 }}>
+                        {m.name[0]?.toUpperCase()}
+                      </div>
+                      <div>
+                        <input value={m.name} onChange={e => setTeam(prev => prev.map(t => t.id===m.id ? {...t,name:e.target.value} : t))}
+                          style={{ background:"none", border:"none", color:COLORS.text, fontWeight:700, fontSize:14, outline:"none", width:130 }} />
+                        <div>
+                          <select value={m.role} onChange={e => setTeam(prev => prev.map(t => t.id===m.id ? {...t,role:e.target.value} : t))}
+                            style={{ background:"none", border:"none", color:COLORS.muted, fontSize:11, cursor:"pointer" }}>
+                            <option value="editor">Editor</option>
+                            <option value="uploader">Uploader</option>
+                            <option value="manager">Manager</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                    <Toggle value={m.active} onChange={v => setTeam(prev => prev.map(t => t.id===m.id ? {...t,active:v} : t))} />
+                  </div>
+                  <Divider />
+                  <div style={{ fontSize:11, color:COLORS.muted, marginBottom:6, fontWeight:700 }}>ASSIGNED CHANNELS</div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                    {channels.map(ch => {
+                      const has = m.channels.includes(ch.id);
+                      return (
+                        <span key={ch.id} onClick={() => setTeam(prev => prev.map(t => t.id===m.id ? {...t, channels: has ? t.channels.filter(x=>x!==ch.id) : [...t.channels, ch.id]} : t))}
+                          style={{ cursor:"pointer", padding:"3px 8px", borderRadius:6, fontSize:11, fontWeight:700,
+                            background: has ? ${COLORS.blue}22 : COLORS.surface,
+                            color: has ? COLORS.blue : COLORS.muted,
+                            border: 1px solid ${has ? COLORS.blue+"44" : COLORS.border} }}>
+                          {ch.name}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <Divider />
+                  <Badge color={
+                    m.role==="admin" ? COLORS.red : m.role==="manager" ? COLORS.purple :
+                    m.role==="uploader" ? COLORS.cyan : COLORS.blue
+                  }>{m.role.toUpperCase()}</Badge>
+                  <span style={{ fontSize:11, color:COLORS.muted, marginLeft:8 }}>{m.channels.length} channels access</span>
+                </Card>
+              ))}
+            </div>
+
+            <Card>
+              <div style={{ fontWeight:700, marginBottom:12, color:COLORS.cyan }}>🔐 Role Permissions</div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, fontSize:12 }}>
+                {[
+                  { role:"Editor", color:COLORS.blue, perms:["Drive mein video upload karna","Title suggest karna"] },
+                  { role:"Uploader", color:COLORS.cyan, perms:["Video queue add karna","Drive links submit karna"] },
+
+> Mmb:
+{ role:"Manager", color:COLORS.purple, perms:["Queue approve karna","Analytics dekhna","Team manage karna"] },
+                  { role:"Admin", color:COLORS.red, perms:["Sab kuch","API keys manage karna","Channels add/remove karna"] },
+                ].map(r => (
+                  <div key={r.role} style={{ background:COLORS.surface, borderRadius:10, padding:12 }}>
+                    <Badge color={r.color}>{r.role}</Badge>
+                    <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:4 }}>
+                      {r.perms.map(p => <div key={p} style={{ color:COLORS.dim }}>• {p}</div>)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ── 6: ANALYTICS ── */}
+        {tab===6 && (
+          <div>
+            <SectionHead>📊 Analytics & Reporting</SectionHead>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14, marginBottom:20 }}>
+              {[
+                { label:"Total Uploaded", val:doneCount, color:COLORS.green, sub:"All time" },
+                { label:"Pending", val:queuedCount, color:COLORS.yellow, sub:"In queue" },
+                { label:"Drive Detected", val:driveItems.length, color:COLORS.purple, sub:"Auto-found" },
+                { label:"Active Members", val:team.filter(t=>t.active).length, color:COLORS.blue, sub:"Team" },
+              ].map(s => (
+                <Card key={s.label} glow={s.color}>
+                  <div style={{ fontSize:28, fontWeight:900, color:s.color }}>{s.val}</div>
+                  <div style={{ fontSize:13, color:COLORS.text, marginTop:2 }}>{s.label}</div>
+                  <div style={{ fontSize:11, color:COLORS.muted }}>{s.sub}</div>
+                </Card>
+              ))}
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
+              <Card>
+                <div style={{ fontWeight:700, marginBottom:14, color:COLORS.text }}>📺 Per Channel Stats</div>
+                {channels.map(ch => {
+                  const uploaded = queue.filter(v => v.channelId===ch.id && v.status==="done").length;
+                  const pending = queue.filter(v => v.channelId===ch.id && v.status==="queued").length;
+                  return (
+                    <div key={ch.id} style={{ marginBottom:12 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                        <span style={{ fontSize:13, fontWeight:600 }}>{ch.name}</span>
+                        <div style={{ display:"flex", gap:6 }}>
+                          <Badge color={COLORS.green}>{uploaded} done</Badge>
+                          <Badge color={COLORS.yellow}>{pending} pending</Badge>
+                        </div>
+                      </div>
+                      <div style={{ height:6, background:COLORS.surface, borderRadius:3, overflow:"hidden" }}>
+                        <div style={{ height:"100%", width: uploaded > 0 ? ${Math.min((uploaded/(uploaded+pending||1))*100,100)}% : "0%",
+                          background:linear-gradient(90deg,${COLORS.green},${COLORS.cyan}), borderRadius:3, transition:"width 0.3s" }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </Card>
+
+              <Card style={{ maxHeight:340, overflowY:"auto" }}>
+                <div style={{ fontWeight:700, marginBottom:14, color:COLORS.text }}>📋 Full Activity Log</div>
+                {logs.map((l,i) => (
+                  <div key={l.id} style={{ paddingBottom:8, marginBottom: i<logs.length-1?8:0, borderBottom: i<logs.length-1?1px solid ${COLORS.border}:"none" }}>
+                    <div style={{ display:"flex", alignItems:"flex-start", gap:6 }}>
+
+> Mmb:
+<StatusDot status={l.status} />
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12, color:COLORS.text }}>{l.msg}</div>
+                        <div style={{ fontSize:10, color:COLORS.muted, marginTop:2 }}>{l.ch} • {l.time}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </Card>
+            </div>
+          </div>
+        )}
+
+        {/* ── 7: SETTINGS ── */}
+        {tab===7 && (
+          <div>
+            <SectionHead>⚙️ Global Settings</SectionHead>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+              <Card glow={COLORS.purple}>
+                <div style={{ fontWeight:700, color:COLORS.purple, marginBottom:14 }}>🤖 AI Configuration</div>
+                <Inp label="Anthropic API Key (Claude AI)" value={settings.anthropicKey}
+                  onChange={e => setSettings({...settings, anthropicKey:e.target.value})}
+                  placeholder="sk-ant-api03-..." type="password" mono />
+                {settings.anthropicKey && <Badge color={COLORS.green}>✅ Claude AI Ready</Badge>}
+                <Divider />
+                <Inp label="ElevenLabs API Key (AI Voice)" value={settings.elevenKey}
+                  onChange={e => setSettings({...settings, elevenKey:e.target.value})}
+                  placeholder="Coming soon..." type="password" mono />
+                <div style={{ fontSize:11, color:COLORS.muted, marginTop:4 }}>AI Voiceover feature — jald aayega</div>
+              </Card>
+
+              <Card>
+                <div style={{ fontWeight:700, color:COLORS.blue, marginBottom:14 }}>👤 Admin Profile</div>
+                <Inp label="Admin Name" value={settings.adminName}
+                  onChange={e => setSettings({...settings, adminName:e.target.value})}
+                  placeholder="Your name" />
+                <Inp label="Admin Email" value={settings.adminEmail}
+                  onChange={e => setSettings({...settings, adminEmail:e.target.value})}
+                  placeholder="admin@example.com" />
+                <Inp label="WhatsApp Number" value={settings.whatsapp}
+                  onChange={e => setSettings({...settings, whatsapp:e.target.value})}
+                  placeholder="+91 98765 43210" />
+              </Card>
+
+              <Card>
+                <div style={{ fontWeight:700, color:COLORS.cyan, marginBottom:14 }}>🔔 Notifications</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                  <Toggle value={settings.whatsappAlerts} onChange={v => setSettings({...settings,whatsappAlerts:v})} label="WhatsApp alerts (upload pe)" />
+                  <Toggle value={settings.emailDigest} onChange={v => setSettings({...settings,emailDigest:v})} label="Daily email digest" />
+                  <Toggle value={settings.autoApprove} onChange={v => setSettings({...settings,autoApprove:v})} label="Auto-approve queue (bina approval ke upload)" />
+                </div>
+              </Card>
+
+              <Card>
+                <div style={{ fontWeight:700, color:COLORS.yellow, marginBottom:14 }}>🛣️ Roadmap — Coming Soon</div>
+                {[
+                  { icon:"🎙️", text:"ElevenLabs AI Voiceover", tag:"Phase 3" },
+                  { icon:"🎬", text:"AI Video Generator (Pictory/RunwayML)", tag:"Phase 3" },
+                  { icon:"🖼️", text:"Auto Thumbnail (DALL-E)", tag:"Phase 3" },
+                  { icon:"💳", text:"SaaS Billing (Razorpay)", tag:"Phase 4" },
+                  { icon:"🏷️", text:"White Label Mode", tag:"Phase 4" },
+                  { icon:"📱", text:"Mobile App", tag:"Phase 5" },
+                ].map((r,i) => (
+                  <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom: i<5?1px solid ${COLORS.border}:"none" }}>
+
+> Mmb:
+<span style={{ fontSize:13, color:COLORS.dim }}>{r.icon} {r.text}</span>
+                    <Badge color={COLORS.yellow}>{r.tag}</Badge>
+                  </div>
+                ))}
+              </Card>
+            </div>
+
+            <Card style={{ marginTop:16, background:${COLORS.green}11, border:1px solid ${COLORS.green}33 }}>
+              <div style={{ fontWeight:700, color:COLORS.green, marginBottom:8 }}>✅ Data Saved Locally</div>
+              <div style={{ fontSize:12, color:COLORS.muted }}>
+                Sari settings, channels, queue — sab browser localStorage mein save hai. Page reload pe bhi safe rahega.
+                Production mein database (Supabase/Firebase) connect karenge.
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
