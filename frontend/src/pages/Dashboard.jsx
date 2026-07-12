@@ -31,6 +31,91 @@ const Inp = ({ label, value, onChange, placeholder, type="text", mono }) => (
   </div>
 );
 
+const SecretInp = ({ label, value, onChange, placeholder }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ marginBottom:12 }}>
+      {label && <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:5,
+        textTransform:"uppercase", letterSpacing:0.5 }}>{label}</div>}
+      <div style={{ display:"flex", gap:6 }}>
+        <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+          type={show ? "text" : "password"}
+          style={{ flex:1, background:C.surface, border:`1px solid ${C.border2}`,
+            borderRadius:8, color:C.cyan, padding:"9px 10px", fontSize:11,
+            boxSizing:"border-box", outline:"none", fontFamily:"monospace", minWidth:0 }} />
+        <button onClick={() => setShow(s => !s)}
+          style={{ padding:"0 10px", background:C.surface, border:`1px solid ${C.border2}`,
+            borderRadius:8, color:C.muted, cursor:"pointer", fontSize:11, flexShrink:0 }}>
+          {show ? "Hide" : "Show"}
+        </button>
+      </div>
+      {value && !show && (
+        <div style={{ fontSize:10, color:C.green, marginTop:3 }}>✓ Value saved hai — Show karo dekhne ke liye</div>
+      )}
+      {!value && (
+        <div style={{ fontSize:10, color:C.yellow, marginTop:3 }}>⚠️ Empty — fill karo</div>
+      )}
+    </div>
+  );
+};
+
+const JsonPasteBtn = ({ onParsed }) => {
+  const [open, setOpen] = useState(false);
+  const [txt, setTxt] = useState("");
+  const parse = () => {
+    try {
+      const obj = JSON.parse(txt.trim());
+      onParsed(obj);
+      setOpen(false);
+      setTxt("");
+    } catch {
+      alert("JSON galat hai — Google Cloud Console se download kiya hua credentials file ya OAuth Playground ka token response paste karo");
+    }
+  };
+  return (
+    <>
+      <button onClick={() => setOpen(true)}
+        style={{ fontSize:11, fontWeight:700, padding:"5px 10px", borderRadius:7,
+          background:`${C.purple}20`, border:`1px solid ${C.purple}60`, color:C.purple,
+          cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+        📋 JSON Paste karo
+      </button>
+      {open && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:9999,
+          display:"flex", alignItems:"center", justifyContent:"center" }}
+          onClick={e => { if(e.target===e.currentTarget) setOpen(false); }}>
+          <div style={{ background:"#1a1a2e", border:`1px solid ${C.purple}50`, borderRadius:14,
+            padding:24, width:500, boxShadow:"0 20px 60px rgba(0,0,0,0.7)" }}>
+            <div style={{ fontWeight:800, fontSize:15, color:C.text, marginBottom:8 }}>
+              📋 Google Credentials JSON Paste Karo
+            </div>
+            <div style={{ fontSize:12, color:C.muted, marginBottom:12, lineHeight:1.6 }}>
+              Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client → <strong style={{color:C.cyan}}>Download JSON</strong> → us file ka poora content yahan paste karo
+            </div>
+            <textarea value={txt} onChange={e => setTxt(e.target.value)}
+              placeholder={'{"web":{"client_id":"...","client_secret":"...",...}}'}
+              style={{ width:"100%", minHeight:140, background:"#0d0d1a", border:`1px solid ${C.border2}`,
+                borderRadius:8, color:C.cyan, padding:"10px 12px", fontSize:11,
+                fontFamily:"monospace", resize:"vertical", boxSizing:"border-box", outline:"none" }} />
+            <div style={{ display:"flex", gap:8, marginTop:12 }}>
+              <button onClick={parse}
+                style={{ flex:1, padding:"9px 0", background:C.purple, border:"none",
+                  borderRadius:8, color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer" }}>
+                ✅ Auto-Fill Karo
+              </button>
+              <button onClick={() => { setOpen(false); setTxt(""); }}
+                style={{ padding:"9px 16px", background:"none", border:`1px solid ${C.border2}`,
+                  borderRadius:8, color:C.muted, cursor:"pointer", fontSize:13 }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
 const Sel = ({ label, value, onChange, options }) => (
   <div style={{ marginBottom: 12 }}>
     {label && <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:5,
@@ -95,7 +180,7 @@ const SectionHead = ({ children, action }) => (
 );
 
 // ── TABS ─────────────────────────────────────────────────────────────────
-const ALL_TABS = ["🏠 Dashboard","📺 Channels","📁 Drive Watch","🚀 Upload","📅 Bulk Schedule","👥 Team","📊 Analytics","⚙️ Settings"];
+const ALL_TABS = ["🏠 Dashboard","📺 Channels","📹 Videos","📁 Drive Watch","🚀 Upload","📅 Bulk Schedule","👥 Team","📊 Analytics","⚙️ Settings"];
 const ADMIN_ONLY_TABS = ["👥 Team"];
 const T = (tabs, name) => tabs.indexOf(name);
 const NICHES = ["Lo-fi Music","Meditation & Sleep","Ambient Sounds","Study Music","Nature Sounds","Motivational","Tech News","Finance","Gaming","Cooking","Education","Comedy","Other"];
@@ -303,11 +388,35 @@ export default function Dashboard() {
     toast("🚀 Upload job queue mein!");
   };
 
-  // ── Channel update ──
-  const updateCh = async (id, field, val) => {
-    setChannels(p => p.map(c => c.id===id ? {...c,[field]:val} : c));
-    await api.patch(`/channels/${id}`, { [field]: val });
+  // ── Channel update (local draft, explicit save) ──
+  const [chDrafts,  setChDrafts]  = useState({});
+  const [chSaving,  setChSaving]  = useState({});
+  const [showView,  setShowView]  = useState({}); // per channel: "stats" | "config" | null
+
+  const getDraft = (ch) => chDrafts[ch.id] ?? ch;
+  const setDraft = (id, field, val) =>
+    setChDrafts(p => ({ ...p, [id]: { ...(p[id] ?? channels.find(c=>c.id===id)), [field]: val } }));
+
+  const saveCh = async (id) => {
+    const draft = chDrafts[id];
+    if (!draft) return;
+    setChSaving(p => ({ ...p, [id]: true }));
+    try {
+      await api.patch(`/channels/${id}`, draft);
+      setChannels(p => p.map(c => c.id===id ? { ...c, ...draft } : c));
+      setChDrafts(p => { const n={...p}; delete n[id]; return n; });
+      toast("✅ Channel save ho gaya!");
+    } catch(e) {
+      toast(e.response?.data?.error || "Save error", "error");
+    }
+    setChSaving(p => ({ ...p, [id]: false }));
   };
+
+  const toggleOnOff = async (id, val) => {
+    setChannels(p => p.map(c => c.id===id ? {...c, enabled:val} : c));
+    await api.patch(`/channels/${id}`, { enabled: val });
+  };
+
   const addChannel = async () => {
     const { data } = await api.post("/channels", { name:`Channel ${channels.length+1}`, lang:"Hindi", upload_time:"10:00", privacy:"public", enabled:true });
     setChannels(p => [...p, data]);
@@ -475,163 +584,223 @@ export default function Dashboard() {
               user.role==="admin"
                 ? <Btn onClick={addChannel} color={C.blue}>+ Add Channel</Btn>
                 : null
-            }>📺 Channel Settings</SectionHead>
-            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              {channels.map(ch => (
-                <Card key={ch.id} glow={ch.enabled ? C.blue : null}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                      <div style={{ width:34, height:34, background:"linear-gradient(135deg,#ff0000,#880000)",
-                        borderRadius:8, display:"flex", alignItems:"center",
-                        justifyContent:"center", fontSize:16 }}>▶</div>
-                      <div>
-                        <div style={{ fontWeight:800, fontSize:15 }}>{ch.name}</div>
-                        <div style={{ fontSize:11, color:C.muted }}>
-                          {ch.niche} • {ch.lang} • {ch.upload_time}
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                      <Toggle value={ch.enabled} onChange={v => updateCh(ch.id,"enabled",v)} label="Active" />
-                      <Btn small color={C.cyan} outline
-                        onClick={() => { loadChVideos(ch.id); setExpandedCh(ch.id); }}>
-                        📊 Stats
-                      </Btn>
-                      <Btn small outline color={C.blue}
-                        onClick={() => setExpandedCh(expandedCh===ch.id ? null : ch.id)}>
-                        {expandedCh===ch.id ? "▲ Close" : "⚙ Configure"}
-                      </Btn>
-                      {user.role==="admin" && (
-                        <Btn small outline color={C.red} onClick={() => removeCh(ch.id)}>✕</Btn>
-                      )}
-                    </div>
-                  </div>
+            }>📺 Channels</SectionHead>
 
-                  {expandedCh===ch.id && (
-                    <div style={{ marginTop:16 }}>
-                      <Divider />
+            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+              {channels.map(ch => {
+                const draft   = getDraft(ch);
+                const dirty   = !!chDrafts[ch.id];
+                const view    = showView[ch.id] || null;  // "stats" | "config" | null
+                const setView = (v) => setShowView(p => ({ ...p, [ch.id]: p[ch.id]===v ? null : v }));
 
-                      {/* ── Stats Section ── */}
-                      {chLoading[ch.id] && (
-                        <div style={{ textAlign:"center", padding:20, color:C.cyan, fontSize:13 }}>
-                          ⏳ YouTube se data fetch ho raha hai...
-                        </div>
-                      )}
-                      {chVideos[ch.id] && !chLoading[ch.id] && (
-                        <div style={{ marginBottom:18 }}>
-                          {/* Stat cards */}
-                          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:14 }}>
-                            {[
-                              { label:"Total Videos",   val: chVideos[ch.id].total_videos?.toLocaleString(),   color:C.red,    icon:"🎬" },
-                              { label:"Total Views",    val: chVideos[ch.id].total_views?.toLocaleString(),    color:C.blue,   icon:"👁"  },
-                              { label:"Subscribers",    val: chVideos[ch.id].hidden_subs ? "Hidden" : chVideos[ch.id].subscribers?.toLocaleString(), color:C.green, icon:"👥" },
-                              { label:"Avg Views/Video",val: chVideos[ch.id].total_videos > 0
-                                  ? Math.round(chVideos[ch.id].total_views / chVideos[ch.id].total_videos).toLocaleString()
-                                  : "0", color:C.purple, icon:"📈" },
-                            ].map(s => (
-                              <div key={s.label} style={{ background:C.surface, borderRadius:10,
-                                padding:"12px 14px", border:`1px solid ${s.color}30` }}>
-                                <div style={{ fontSize:18, marginBottom:4 }}>{s.icon}</div>
-                                <div style={{ fontSize:20, fontWeight:900, color:s.color }}>{s.val}</div>
-                                <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{s.label}</div>
-                              </div>
-                            ))}
-                          </div>
-
-                          {/* Video list with edit/delete */}
-                          {chVideos[ch.id].recent_videos?.length > 0 && (
-                            <div>
-                              <div style={{ fontWeight:700, fontSize:12, color:C.muted, marginBottom:8,
-                                textTransform:"uppercase", letterSpacing:0.5 }}>
-                                Videos ({chVideos[ch.id].recent_videos.length})
-                              </div>
-                              <div style={{ display:"flex", flexDirection:"column", gap:8, maxHeight:420, overflowY:"auto" }}>
-                                {chVideos[ch.id].recent_videos.map(v => (
-                                  <VideoRow key={v.id} v={v} chId={ch.id} C={C}
-                                    userRole={user.role}
-                                    onEdit={async (upd) => {
-                                      try {
-                                        await api.patch(`/channels/${ch.id}/yt-videos/${v.id}`, upd);
-                                        setChVideos(p => ({...p, [ch.id]: {
-                                          ...p[ch.id],
-                                          recent_videos: p[ch.id].recent_videos.map(rv =>
-                                            rv.id===v.id ? {...rv,...upd} : rv)
-                                        }}));
-                                        toast("✅ Video update ho gayi YouTube pe!");
-                                      } catch(e) { toast(e.response?.data?.error||"Error","error"); }
-                                    }}
-                                    onDelete={async () => {
-                                      if (!confirm(`"${v.title}" ko YouTube se permanently delete karo?`)) return;
-                                      try {
-                                        await api.delete(`/channels/${ch.id}/yt-videos/${v.id}`);
-                                        setChVideos(p => ({...p, [ch.id]: {
-                                          ...p[ch.id],
-                                          recent_videos: p[ch.id].recent_videos.filter(rv => rv.id!==v.id),
-                                          total_videos: (p[ch.id].total_videos||1) - 1,
-                                        }}));
-                                        toast(`🗑 "${v.title}" delete ho gayi`);
-                                      } catch(e) { toast(e.response?.data?.error||"Error","error"); }
-                                    }}
-                                  />
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          <Divider />
-                        </div>
-                      )}
-
-                      {/* ── Configure Section ── */}
-                      {/* Auto-fill from YouTube URL */}
-                      {user.role==="admin" && (
-                        <AutoFillBar chId={ch.id} C={C}
-                          onFill={(info) => {
-                            updateCh(ch.id, "name", info.name);
-                            toast(`✅ "${info.name}" ka data fill ho gaya! Subscribers: ${Number(info.subscribers).toLocaleString()}`);
-                          }}
-                        />
-                      )}
-
-                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginTop:12 }}>
-                        <Inp label="Channel Name" value={ch.name||""} onChange={e => updateCh(ch.id,"name",e.target.value)} placeholder="My Channel" />
-                        <Sel label="Niche" value={ch.niche||""} onChange={e => updateCh(ch.id,"niche",e.target.value)} options={["",...NICHES]} />
-                        <Sel label="Language" value={ch.lang||"Hindi"} onChange={e => updateCh(ch.id,"lang",e.target.value)} options={LANGUAGES} />
-                        <Inp label="OAuth Client ID" value={ch.client_id||""} onChange={e => updateCh(ch.id,"client_id",e.target.value)} placeholder="xxx.apps.googleusercontent.com" mono />
-                        <Inp label="OAuth Client Secret" value={ch.client_secret||""} onChange={e => updateCh(ch.id,"client_secret",e.target.value)} placeholder="GOCSPX-..." type="password" mono />
-                        <Inp label="Refresh Token" value={ch.refresh_token||""} onChange={e => updateCh(ch.id,"refresh_token",e.target.value)} placeholder="OAuth refresh token" type="password" mono />
-                        <Inp label="Drive Folder ID" value={ch.drive_folder_id||""} onChange={e => updateCh(ch.id,"drive_folder_id",e.target.value)} placeholder="1BxiMVs0XRA5nFM..." mono />
-                        <Inp label="Drive Folder Name" value={ch.drive_folder_name||""} onChange={e => updateCh(ch.id,"drive_folder_name",e.target.value)} placeholder="Channel 1 Videos" />
-                        <Inp label="YouTube API Key (optional)" value={ch.youtube_api_key||""} onChange={e => updateCh(ch.id,"youtube_api_key",e.target.value)} placeholder="AIza..." type="password" mono />
-                        <Inp label="Default Upload Time" value={ch.upload_time||"10:00"} onChange={e => updateCh(ch.id,"upload_time",e.target.value)} type="time" />
-                        <Sel label="Privacy" value={ch.privacy||"public"} onChange={e => updateCh(ch.id,"privacy",e.target.value)} options={PRIVACY} />
+                return (
+                  <Card key={ch.id} glow={ch.enabled ? C.blue : null}>
+                    {/* ── Channel Header Row ── */}
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                        <div style={{ width:36, height:36, background:"linear-gradient(135deg,#ff0000,#880000)",
+                          borderRadius:8, display:"flex", alignItems:"center",
+                          justifyContent:"center", fontSize:16, flexShrink:0 }}>▶</div>
                         <div>
-                          <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:8,
-                            textTransform:"uppercase", letterSpacing:0.5 }}>Auto Watch</div>
-                          <Toggle value={ch.auto_watch} onChange={v => updateCh(ch.id,"auto_watch",v)} label="Drive Auto-Watch" />
-                          {ch.auto_watch && (
-                            <div style={{ marginTop:8 }}>
-                              <Inp label="Check Interval (min)" value={ch.watch_interval||5}
-                                onChange={e => updateCh(ch.id,"watch_interval",parseInt(e.target.value))} />
+                          <div style={{ fontWeight:800, fontSize:15, color:C.text }}>{ch.name}</div>
+                          <div style={{ fontSize:11, color:C.muted }}>
+                            {ch.niche||"No niche"} • {ch.lang||"Hindi"} • ⏰ {ch.upload_time||"10:00"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+                        {/* OAuth status badge */}
+                        <Badge color={ch.refresh_token ? C.green : C.red}>
+                          {ch.refresh_token ? "✓ OAuth" : "✗ OAuth Missing"}
+                        </Badge>
+                        <Badge color={ch.drive_folder_id ? C.green : C.yellow}>
+                          {ch.drive_folder_id ? "✓ Drive" : "Drive: Set karo"}
+                        </Badge>
+
+                        <Toggle value={ch.enabled} onChange={v => toggleOnOff(ch.id, v)} label="Active" />
+
+                        <Btn small color={C.cyan} outline onClick={() => {
+                          setView("stats");
+                          if (!chVideos[ch.id]) loadChVideos(ch.id);
+                        }}>
+                          {view==="stats" ? "▲ Stats" : "📊 Stats"}
+                        </Btn>
+                        <Btn small outline color={C.blue} onClick={() => setView("config")}>
+                          {view==="config" ? "▲ Close" : "⚙ Configure"}
+                        </Btn>
+                        {user.role==="admin" && (
+                          <Btn small outline color={C.red} onClick={() => removeCh(ch.id)}>✕</Btn>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* ── STATS PANEL ── */}
+                    {view==="stats" && (
+                      <div style={{ marginTop:16 }}>
+                        <Divider />
+                        {chLoading[ch.id] && (
+                          <div style={{ textAlign:"center", padding:20, color:C.cyan, fontSize:13 }}>
+                            ⏳ YouTube se data fetch ho raha hai...
+                          </div>
+                        )}
+                        {!chLoading[ch.id] && !chVideos[ch.id] && (
+                          <div style={{ textAlign:"center", padding:20, color:C.muted, fontSize:13 }}>
+                            <div style={{ fontSize:28, marginBottom:8 }}>📊</div>
+                            Koi data nahi — pehle OAuth (Client ID + Secret + Refresh Token) configure karo
+                          </div>
+                        )}
+                        {chVideos[ch.id] && !chLoading[ch.id] && (
+                          <>
+                            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:14 }}>
+                              {[
+                                { label:"Total Videos",   val:chVideos[ch.id].total_videos?.toLocaleString(),   color:C.red,    icon:"🎬" },
+                                { label:"Total Views",    val:chVideos[ch.id].total_views?.toLocaleString(),    color:C.blue,   icon:"👁"  },
+                                { label:"Subscribers",    val:chVideos[ch.id].hidden_subs ? "Hidden" : chVideos[ch.id].subscribers?.toLocaleString(), color:C.green, icon:"👥" },
+                                { label:"Avg Views/Video",val:chVideos[ch.id].total_videos > 0
+                                    ? Math.round(chVideos[ch.id].total_views / chVideos[ch.id].total_videos).toLocaleString()
+                                    : "0", color:C.purple, icon:"📈" },
+                              ].map(s => (
+                                <div key={s.label} style={{ background:C.surface, borderRadius:10,
+                                  padding:"12px 14px", border:`1px solid ${s.color}30` }}>
+                                  <div style={{ fontSize:18, marginBottom:4 }}>{s.icon}</div>
+                                  <div style={{ fontSize:20, fontWeight:900, color:s.color }}>{s.val||"—"}</div>
+                                  <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{s.label}</div>
+                                </div>
+                              ))}
                             </div>
+                            <div style={{ fontSize:12, color:C.muted, marginTop:8, padding:"10px 12px",
+                              background:`${C.blue}10`, borderRadius:8, border:`1px solid ${C.blue}20` }}>
+                              📹 Videos dekhne ke liye upar <strong style={{color:C.blue}}>📹 Videos tab</strong> mein jao — wahan edit, delete, playlist sab hai
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ── CONFIGURE PANEL ── */}
+                    {view==="config" && (
+                      <div style={{ marginTop:16 }}>
+                        <Divider />
+
+                        {user.role==="admin" && (
+                          <AutoFillBar chId={ch.id} C={C}
+                            onFill={(info) => {
+                              setDraft(ch.id, "name", info.name);
+                              toast(`✅ "${info.name}" auto-fill ho gaya! Save karo.`);
+                            }}
+                          />
+                        )}
+
+                        {/* Row 1: Basic info */}
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginTop:12 }}>
+                          <Inp label="Channel Name" value={draft.name||""}
+                            onChange={e => setDraft(ch.id,"name",e.target.value)} placeholder="My Channel" />
+                          <Sel label="Niche" value={draft.niche||""}
+                            onChange={e => setDraft(ch.id,"niche",e.target.value)} options={["",...NICHES]} />
+                          <Sel label="Language" value={draft.lang||"Hindi"}
+                            onChange={e => setDraft(ch.id,"lang",e.target.value)} options={LANGUAGES} />
+                        </div>
+
+                        {/* Row 2: OAuth tokens */}
+                        <div style={{ padding:"12px 14px", background:`${C.purple}10`, border:`1px solid ${C.purple}30`,
+                          borderRadius:10, marginBottom:12 }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                            <div style={{ fontSize:11, color:C.purple, fontWeight:700,
+                              textTransform:"uppercase", letterSpacing:0.5 }}>🔑 Google OAuth Credentials</div>
+                            <JsonPasteBtn onParsed={(parsed) => {
+                              // credentials.json (from Google Cloud Console)
+                              const w = parsed.web || parsed.installed || parsed;
+                              if (w.client_id)     setDraft(ch.id,"client_id",w.client_id);
+                              if (w.client_secret) setDraft(ch.id,"client_secret",w.client_secret);
+                              // token response (from OAuth Playground)
+                              if (parsed.refresh_token) setDraft(ch.id,"refresh_token",parsed.refresh_token);
+                              const filled = [w.client_id&&"Client ID", w.client_secret&&"Secret", parsed.refresh_token&&"Refresh Token"].filter(Boolean);
+                              toast(`✅ Auto-fill: ${filled.join(", ")} — Save karna mat bhulna!`);
+                            }} />
+                          </div>
+                          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12 }}>
+                            <SecretInp label="OAuth Client ID" value={draft.client_id||""}
+                              onChange={v => setDraft(ch.id,"client_id",v)} placeholder="xxx.apps.googleusercontent.com" />
+                            <SecretInp label="OAuth Client Secret" value={draft.client_secret||""}
+                              onChange={v => setDraft(ch.id,"client_secret",v)} placeholder="GOCSPX-..." />
+                            <SecretInp label="Refresh Token" value={draft.refresh_token||""}
+                              onChange={v => setDraft(ch.id,"refresh_token",v)} placeholder="1//0g..." />
+                          </div>
+                          <div style={{ fontSize:11, color:C.muted, marginTop:8, lineHeight:1.6 }}>
+                            💡 <strong style={{color:C.yellow}}>Step 1:</strong> "📋 JSON Paste" karo Google credentials file se → Client ID + Secret auto-fill<br/>
+                            💡 <strong style={{color:C.yellow}}>Step 2:</strong> <a href="https://developers.google.com/oauthplayground/" target="_blank" rel="noreferrer" style={{color:C.cyan}}>OAuth Playground</a> → ⚙ Settings → "Use your own OAuth credentials" ON → credentials enter → YouTube scope → Authorize → Exchange code → Refresh Token copy karo
+                          </div>
+                        </div>
+
+                        {/* Row 3: Drive + optional */}
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:12 }}>
+                          <Inp label="Drive Folder ID" value={draft.drive_folder_id||""}
+                            onChange={e => setDraft(ch.id,"drive_folder_id",e.target.value)}
+                            placeholder="1BxiMVs0XRA5nFM..." mono />
+                          <Inp label="Drive Folder Name" value={draft.drive_folder_name||""}
+                            onChange={e => setDraft(ch.id,"drive_folder_name",e.target.value)}
+                            placeholder="Channel 1 Videos" />
+                          <SecretInp label="YouTube API Key (optional)" value={draft.youtube_api_key||""}
+                            onChange={v => setDraft(ch.id,"youtube_api_key",v)} placeholder="AIza..." />
+                        </div>
+
+                        {/* Row 4: Upload settings */}
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:12 }}>
+                          <Inp label="Default Upload Time" value={draft.upload_time||"10:00"}
+                            onChange={e => setDraft(ch.id,"upload_time",e.target.value)} type="time" />
+                          <Sel label="Default Privacy" value={draft.privacy||"public"}
+                            onChange={e => setDraft(ch.id,"privacy",e.target.value)} options={PRIVACY} />
+                          <div>
+                            <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:8,
+                              textTransform:"uppercase", letterSpacing:0.5 }}>Auto Watch Drive</div>
+                            <Toggle value={draft.auto_watch||false}
+                              onChange={v => setDraft(ch.id,"auto_watch",v)} label="Auto-Watch Enable" />
+                            {draft.auto_watch && (
+                              <div style={{ marginTop:8 }}>
+                                <Inp label="Check every (minutes)" value={draft.watch_interval||5}
+                                  onChange={e => setDraft(ch.id,"watch_interval",parseInt(e.target.value)||5)} />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div style={{ padding:10, background:C.surface, borderRadius:8, fontSize:12, color:C.muted, marginBottom:14 }}>
+                          💡 <strong style={{ color:C.text }}>Drive Folder ID:</strong> Drive folder open karo → URL mein <code style={{color:C.cyan}}>/folders/</code> ke baad wala part copy karo
+                        </div>
+
+                        {/* SAVE BUTTON */}
+                        <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+                          <Btn color={C.green} disabled={!dirty || chSaving[ch.id]} onClick={() => saveCh(ch.id)}>
+                            {chSaving[ch.id] ? "⏳ Saving..." : dirty ? "💾 Save Channel" : "✓ Saved"}
+                          </Btn>
+                          {dirty && (
+                            <span style={{ fontSize:12, color:C.yellow }}>
+                              ⚠️ Unsaved changes — Save karo!
+                            </span>
                           )}
                         </div>
                       </div>
-                      <div style={{ marginTop:8, padding:10, background:C.surface,
-                        borderRadius:8, fontSize:12, color:C.muted }}>
-                        💡 <strong style={{ color:C.text }}>Drive Folder ID:</strong> Drive folder → URL mein /folders/ ke baad wala part copy karo
-                      </div>
-                    </div>
-                  )}
-                </Card>
-              ))}
+                    )}
+                  </Card>
+                );
+              })}
+
               {!channels.length && (
                 <Card style={{ textAlign:"center", padding:40, color:C.muted }}>
                   <div style={{ fontSize:36, marginBottom:10 }}>📺</div>
-                  <div>Koi channel nahi — + Add Channel se banao</div>
+                  <div style={{ fontWeight:700, marginBottom:6 }}>Koi channel nahi</div>
+                  <div style={{ fontSize:13, marginBottom:16 }}>Upar "+ Add Channel" button se pehla channel banao</div>
+                  {user.role==="admin" && <Btn onClick={addChannel} color={C.blue}>+ Add Channel</Btn>}
                 </Card>
               )}
             </div>
           </div>
+        )}
+
+        {/* ── VIDEOS ── */}
+        {tab===T(TABS,"📹 Videos") && (
+          <VideoManagerTab channels={channels} C={C} user={user} toast={toast} />
         )}
 
         {/* ── DRIVE WATCH ── */}
@@ -825,6 +994,36 @@ export default function Dashboard() {
                   <Inp label="Hashtags" value={upState.hashtags}
                     onChange={e => setUpState(p => ({...p, hashtags:e.target.value}))}
                     placeholder="#lofi #studymusic #chillbeats (AI generate karega)" />
+
+                  {/* Thumbnail */}
+                  <div style={{ marginTop:4 }}>
+                    <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:5,
+                      textTransform:"uppercase", letterSpacing:0.5 }}>Thumbnail Image (optional)</div>
+                    <label style={{ display:"flex", flexDirection:"column", alignItems:"center",
+                      border:`2px dashed ${C.purple}60`, borderRadius:10, padding:"14px 12px",
+                      cursor:"pointer", background:`${C.purple}08`, gap:6 }}>
+                      <div style={{ fontSize:22 }}>🖼️</div>
+                      <div style={{ fontSize:12, color:C.purple, fontWeight:700 }}>
+                        {upState.thumbFile ? upState.thumbFile.name : "Thumbnail upload karo (JPG/PNG)"}
+                      </div>
+                      <div style={{ fontSize:11, color:C.muted }}>1280×720 best hai</div>
+                      <input type="file" accept="image/*" style={{ display:"none" }}
+                        onChange={e => {
+                          const f = e.target.files?.[0];
+                          if (f) setUpState(p => ({...p, thumbFile:f}));
+                        }} />
+                    </label>
+                    {upState.thumbFile && (
+                      <div style={{ marginTop:8, display:"flex", alignItems:"center", gap:10 }}>
+                        <img src={URL.createObjectURL(upState.thumbFile)} alt=""
+                          style={{ width:80, height:45, objectFit:"cover", borderRadius:6, border:`1px solid ${C.border}` }} />
+                        <div style={{ fontSize:12, color:C.green }}>✅ {upState.thumbFile.name}</div>
+                        <button onClick={() => setUpState(p => ({...p, thumbFile:null}))}
+                          style={{ background:"none", border:`1px solid ${C.red}40`, borderRadius:6,
+                            color:C.red, fontSize:11, padding:"3px 8px", cursor:"pointer" }}>✕ Remove</button>
+                      </div>
+                    )}
+                  </div>
                 </Card>
                 <Card>
                   <div style={{ fontWeight:700, color:C.green, marginBottom:14 }}>Step 4 — Publish Options</div>
@@ -1075,57 +1274,81 @@ function AutoFillBar({ chId, C, onFill }) {
 
 // ── Video Row (in channel stats) ──────────────────────────────────────────
 function VideoRow({ v, chId, C, userRole, onEdit, onDelete }) {
-  const [editing,  setEditing]  = useState(false);
-  const [editData, setEditData] = useState({ title: v.title, description: v.description||"", tags: v.tags||"", privacy: v.privacy||"public" });
-  const [saving,   setSaving]   = useState(false);
+  const [editing,   setEditing]  = useState(false);
+  const [editData,  setEditData] = useState({ title: v.title||"", description: v.description||"", tags: v.tags||"", privacy: v.privacy||"public" });
+  const [saving,    setSaving]   = useState(false);
+  const [imgErr,    setImgErr]   = useState(false);
+  const [thumbFile, setThumbFile] = useState(null);
 
   const saveEdit = async () => {
     setSaving(true);
-    await onEdit(editData);
+    await onEdit(editData, thumbFile || null);
     setSaving(false);
     setEditing(false);
+    setThumbFile(null);
   };
 
-  const fmtNum = n => n >= 1000000 ? (n/1000000).toFixed(1)+"M" : n >= 1000 ? (n/1000).toFixed(1)+"K" : String(n);
+  const fmtNum = n => {
+    const num = Number(n) || 0;
+    return num >= 1000000 ? (num/1000000).toFixed(1)+"M" : num >= 1000 ? (num/1000).toFixed(1)+"K" : String(num);
+  };
+
+  // Use hqdefault as fallback for thumbnail
+  const thumbUrl = (!imgErr && v.thumbnail) ? v.thumbnail : `https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`;
 
   return (
-    <div style={{ background:C.surface, borderRadius:10, border:`1px solid ${C.border}`, overflow:"hidden" }}>
-      {/* Main row */}
-      <div style={{ display:"flex", gap:12, padding:10, alignItems:"flex-start" }}>
-        <a href={`https://youtu.be/${v.id}`} target="_blank" rel="noreferrer" style={{ flexShrink:0 }}>
-          {v.thumbnail
-            ? <img src={v.thumbnail} alt="" style={{ width:120, height:68, objectFit:"cover", borderRadius:6 }} />
-            : <div style={{ width:120, height:68, background:C.border, borderRadius:6, display:"flex", alignItems:"center", justifyContent:"center", fontSize:24 }}>▶</div>
-          }
+    <div style={{ background:C.card, borderRadius:10, border:`1px solid ${C.border}`, overflow:"hidden" }}>
+      {/* Main row — fixed height so nothing collapses */}
+      <div style={{ display:"flex", gap:0, alignItems:"stretch", minHeight:80 }}>
+
+        {/* Thumbnail */}
+        <a href={`https://youtu.be/${v.id}`} target="_blank" rel="noreferrer"
+          style={{ flexShrink:0, display:"block", width:130 }}>
+          <img
+            src={thumbUrl}
+            alt=""
+            onError={() => setImgErr(true)}
+            style={{ width:130, height:80, objectFit:"cover", display:"block" }}
+          />
         </a>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontWeight:700, fontSize:13, marginBottom:4, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-            {v.title}
+
+        {/* Info */}
+        <div style={{ flex:1, minWidth:0, padding:"10px 12px", display:"flex", flexDirection:"column", justifyContent:"space-between" }}>
+          <div style={{ fontWeight:700, fontSize:13, color:C.text, marginBottom:6,
+            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+            {v.title || "(No title)"}
           </div>
-          <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-            <span style={{ fontSize:11, color:C.muted }}>👁 {fmtNum(v.views||0)}</span>
-            <span style={{ fontSize:11, color:C.muted }}>👍 {fmtNum(v.likes||0)}</span>
-            <span style={{ fontSize:11, color:C.muted }}>💬 {fmtNum(v.comments||0)}</span>
-            <span style={{ fontSize:11, color: v.privacy==="public" ? C.green : C.yellow }}>
-              🔒 {v.privacy}
+          <div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
+            <span style={{ fontSize:12, color:C.dim }}>👁 {fmtNum(v.views)}</span>
+            <span style={{ fontSize:12, color:C.dim }}>👍 {fmtNum(v.likes)}</span>
+            <span style={{ fontSize:12, color:C.dim }}>💬 {fmtNum(v.comments)}</span>
+            <span style={{ fontSize:12, color: v.privacy==="public" ? C.green : C.yellow, fontWeight:600 }}>
+              {v.privacy==="public" ? "🌐 Public" : v.privacy==="private" ? "🔒 Private" : "🔗 Unlisted"}
             </span>
-            <span style={{ fontSize:11, color:C.muted }}>
-              📅 {new Date(v.published).toLocaleDateString("en-IN")}
-            </span>
+            {v.published && (
+              <span style={{ fontSize:11, color:C.muted }}>
+                📅 {new Date(v.published).toLocaleDateString("en-IN", {day:"2-digit",month:"short",year:"numeric"})}
+              </span>
+            )}
           </div>
         </div>
-        {(userRole==="admin"||userRole==="manager") && (
-          <div style={{ display:"flex", gap:6, flexShrink:0 }}>
-            <button onClick={() => setEditing(!editing)}
-              style={{ padding:"5px 10px", background:`${C.blue}18`, border:`1px solid ${C.blue}40`,
-                borderRadius:7, color:C.blue, fontSize:11, fontWeight:700, cursor:"pointer" }}>
+
+        {/* Action buttons */}
+        {(userRole==="admin" || userRole==="manager") && (
+          <div style={{ display:"flex", flexDirection:"column", justifyContent:"center", gap:6,
+            padding:"0 12px", flexShrink:0 }}>
+            <button onClick={() => setEditing(e => !e)}
+              style={{ padding:"5px 12px", background:`${C.blue}18`, border:`1px solid ${C.blue}40`,
+                borderRadius:7, color:C.blue, fontSize:11, fontWeight:700, cursor:"pointer",
+                whiteSpace:"nowrap" }}>
               ✏️ Edit
             </button>
             {userRole==="admin" && (
               <button onClick={onDelete}
-                style={{ padding:"5px 10px", background:`${C.red}18`, border:`1px solid ${C.red}40`,
-                  borderRadius:7, color:C.red, fontSize:11, fontWeight:700, cursor:"pointer" }}>
-                🗑
+                style={{ padding:"5px 12px", background:`${C.red}18`, border:`1px solid ${C.red}40`,
+                  borderRadius:7, color:C.red, fontSize:11, fontWeight:700, cursor:"pointer",
+                  whiteSpace:"nowrap" }}>
+                🗑 Delete
               </button>
             )}
           </div>
@@ -1134,50 +1357,74 @@ function VideoRow({ v, chId, C, userRole, onEdit, onDelete }) {
 
       {/* Edit panel */}
       {editing && (
-        <div style={{ borderTop:`1px solid ${C.border}`, padding:12, background:`${C.blue}08` }}>
+        <div style={{ borderTop:`1px solid ${C.border}`, padding:14, background:`${C.blue}06` }}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
             <div style={{ gridColumn:"1/-1" }}>
               <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Title</div>
               <input value={editData.title} onChange={e => setEditData(p => ({...p,title:e.target.value}))}
                 style={{ width:"100%", background:C.surface, border:`1px solid ${C.border2}`, borderRadius:7,
-                  color:C.text, padding:"7px 10px", fontSize:12, boxSizing:"border-box" }} />
+                  color:C.text, padding:"8px 10px", fontSize:13, boxSizing:"border-box", outline:"none" }} />
             </div>
             <div style={{ gridColumn:"1/-1" }}>
               <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Description</div>
               <textarea value={editData.description} onChange={e => setEditData(p => ({...p,description:e.target.value}))}
                 style={{ width:"100%", background:C.surface, border:`1px solid ${C.border2}`, borderRadius:7,
-                  color:C.text, padding:"7px 10px", fontSize:12, minHeight:70, resize:"vertical", boxSizing:"border-box", fontFamily:"inherit" }} />
+                  color:C.text, padding:"8px 10px", fontSize:12, minHeight:80, resize:"vertical",
+                  boxSizing:"border-box", fontFamily:"inherit", outline:"none" }} />
             </div>
             <div>
               <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Tags (comma separated)</div>
               <input value={editData.tags} onChange={e => setEditData(p => ({...p,tags:e.target.value}))}
                 style={{ width:"100%", background:C.surface, border:`1px solid ${C.border2}`, borderRadius:7,
-                  color:C.text, padding:"7px 10px", fontSize:12, boxSizing:"border-box" }} />
+                  color:C.text, padding:"8px 10px", fontSize:12, boxSizing:"border-box", outline:"none" }} />
             </div>
             <div>
               <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Privacy</div>
               <select value={editData.privacy} onChange={e => setEditData(p => ({...p,privacy:e.target.value}))}
                 style={{ width:"100%", background:C.surface, border:`1px solid ${C.border2}`, borderRadius:7,
-                  color:C.text, padding:"7px 10px", fontSize:12 }}>
+                  color:C.text, padding:"8px 10px", fontSize:12, outline:"none" }}>
                 {["public","private","unlisted"].map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             </div>
+            <div style={{ gridColumn:"1/-1" }}>
+              <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Thumbnail (optional)</div>
+              <label style={{ display:"flex", alignItems:"center", gap:10, cursor:"pointer",
+                border:`1px dashed ${C.purple}60`, borderRadius:8, padding:"8px 12px",
+                background:`${C.purple}08` }}>
+                {thumbFile
+                  ? <img src={URL.createObjectURL(thumbFile)} alt="" style={{ width:60, height:34, objectFit:"cover", borderRadius:5 }} />
+                  : <span style={{ fontSize:20 }}>🖼️</span>
+                }
+                <span style={{ fontSize:12, color:C.purple, fontWeight:600 }}>
+                  {thumbFile ? thumbFile.name : "Thumbnail upload karo (JPG/PNG 1280×720)"}
+                </span>
+                <input type="file" accept="image/*" style={{ display:"none" }}
+                  onChange={e => { const f=e.target.files?.[0]; if(f) setThumbFile(f); }} />
+              </label>
+              {thumbFile && (
+                <button onClick={() => setThumbFile(null)}
+                  style={{ fontSize:11, color:C.muted, background:"none", border:"none", cursor:"pointer", marginTop:3 }}>
+                  ✕ Remove
+                </button>
+              )}
+            </div>
           </div>
-          <div style={{ display:"flex", gap:8 }}>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
             <button onClick={saveEdit} disabled={saving}
-              style={{ padding:"7px 16px", background:C.green, border:"none", borderRadius:7,
-                color:"#fff", fontWeight:700, fontSize:12, cursor: saving ? "not-allowed" : "pointer" }}>
+              style={{ padding:"8px 18px", background:saving ? C.border2 : C.green, border:"none",
+                borderRadius:7, color:"#fff", fontWeight:700, fontSize:12,
+                cursor: saving ? "not-allowed" : "pointer" }}>
               {saving ? "⏳ Saving..." : "✅ Save to YouTube"}
             </button>
             <button onClick={() => setEditing(false)}
-              style={{ padding:"7px 12px", background:"none", border:`1px solid ${C.border2}`,
+              style={{ padding:"8px 14px", background:"none", border:`1px solid ${C.border2}`,
                 borderRadius:7, color:C.muted, fontSize:12, cursor:"pointer" }}>
               Cancel
             </button>
             <a href={`https://studio.youtube.com/video/${v.id}/edit`} target="_blank" rel="noreferrer"
-              style={{ padding:"7px 12px", background:`${C.yellow}18`, border:`1px solid ${C.yellow}40`,
+              style={{ padding:"8px 14px", background:`${C.yellow}18`, border:`1px solid ${C.yellow}40`,
                 borderRadius:7, color:C.yellow, fontSize:12, fontWeight:700, textDecoration:"none" }}>
-              🎬 YT Studio mein kholo
+              🎬 YT Studio
             </a>
           </div>
         </div>
@@ -1359,133 +1606,220 @@ function SettingsTab({ user, toast }) {
   );
 }
 
-// ── Bulk Schedule Tab (separate to keep Dashboard lean) ────────────────────
+// ── Bulk Schedule Tab ─────────────────────────────────────────────────────
 function BulkScheduleTab({ channels, queue, setQueue, user, toast, approveItem, triggerUpload }) {
   const uid = () => Math.random().toString(36).slice(2,9);
-  const [rows, setRows] = useState([
-    { id:uid(), channelId:"", driveLink:"", title:"", schedDate:"", schedTime:"10:00" },
-  ]);
+  const blankRow = () => ({ id:uid(), channelId:"", driveLink:"", title:"", schedDate:"", schedTime:"10:00", instant:true, thumbFile:null, privacy:"public" });
+  const [rows, setRows] = useState([blankRow()]);
+  const [submitting, setSubmitting] = useState(false);
 
-  const addRow = () => setRows(p => [...p, { id:uid(), channelId:"", driveLink:"", title:"", schedDate:"", schedTime:"10:00" }]);
+  const addRow    = () => setRows(p => [...p, blankRow()]);
   const removeRow = (id) => setRows(p => p.filter(r => r.id!==id));
-  const update = (id, field, val) => setRows(p => p.map(r => r.id===id ? {...r,[field]:val} : r));
+  const update    = (id, field, val) => setRows(p => p.map(r => r.id===id ? {...r,[field]:val} : r));
 
   const submitBulk = async () => {
     const valid = rows.filter(r => r.driveLink && r.title && r.channelId);
-    if (!valid.length) { toast("Complete rows chahiye", "error"); return; }
-    const { data } = await api.post("/queue/bulk", {
-      items: valid.map(r => ({
-        channel_id: r.channelId, drive_link: r.driveLink, title: r.title,
-        sched_date: r.schedDate || null, sched_time: r.schedTime,
-      })),
-    });
-    setQueue(p => [...data, ...p]);
-    toast(`✅ ${data.length} videos queue mein!`);
-    setRows([{ id:uid(), channelId:"", driveLink:"", title:"", schedDate:"", schedTime:"10:00" }]);
+    if (!valid.length) { toast("Complete rows chahiye (Channel + Drive Link + Title)", "error"); return; }
+    setSubmitting(true);
+    try {
+      const { data } = await api.post("/queue/bulk", {
+        items: valid.map(r => ({
+          channel_id:  r.channelId,
+          drive_link:  r.driveLink,
+          title:       r.title,
+          privacy:     r.privacy || "public",
+          sched_date:  r.instant ? null : (r.schedDate || null),
+          sched_time:  r.instant ? null : r.schedTime,
+        })),
+      });
+      // Auto-approve + upload for instant rows
+      const instantItems = data.filter((_,i) => valid[i]?.instant);
+      for (const item of instantItems) {
+        try {
+          await api.patch(`/queue/${item.id}/approve`);
+          await api.post(`/queue/${item.id}/upload`);
+        } catch {}
+      }
+      setQueue(p => [...data, ...p]);
+      toast(`✅ ${data.length} videos queue mein! (${instantItems.length} instant upload shuru)`);
+      setRows([blankRow()]);
+    } catch(e) {
+      toast(e.response?.data?.error || "Error", "error");
+    }
+    setSubmitting(false);
   };
+
+  const inpStyle = (w) => ({ background:C.surface, border:`1px solid ${C.border2}`, borderRadius:6,
+    color:C.text, padding:"6px 8px", fontSize:12, width:w||"100%" });
 
   return (
     <div>
+      {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-        <div style={{ fontWeight:800, fontSize:16 }}>📅 Bulk Schedule</div>
+        <div style={{ fontWeight:800, fontSize:16 }}>📅 Bulk Schedule / Upload</div>
         <div style={{ display:"flex", gap:8 }}>
-          <Btn small onClick={addRow} color={C.blue}>+ Row</Btn>
-          <Btn small onClick={submitBulk} color={C.green}>✅ Sab Queue Karo</Btn>
+          <Btn small onClick={addRow} color={C.blue}>+ Row Add</Btn>
+          <Btn small onClick={submitBulk} disabled={submitting} color={C.green}>
+            {submitting ? "⏳ Processing..." : "🚀 Sab Queue Karo"}
+          </Btn>
         </div>
       </div>
 
-      <div style={{ overflowX:"auto", marginBottom:24 }}>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-          <thead>
-            <tr style={{ borderBottom:`1px solid ${C.border}` }}>
-              {["#","Channel","Drive Link","Title","Date","Time",""].map(h => (
-                <th key={h} style={{ padding:"8px 10px", color:C.muted, fontWeight:700,
-                  textAlign:"left", fontSize:11, textTransform:"uppercase" }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row,i) => (
-              <tr key={row.id} style={{ borderBottom:`1px solid ${C.border}` }}>
-                <td style={{ padding:"8px 10px", color:C.muted }}>{i+1}</td>
-                <td style={{ padding:"4px 8px" }}>
-                  <select value={row.channelId} onChange={e => update(row.id,"channelId",e.target.value)}
-                    style={{ background:C.surface, border:`1px solid ${C.border2}`, borderRadius:6,
-                      color:C.text, padding:"6px 8px", fontSize:12, width:140 }}>
-                    <option value="">Select…</option>
-                    {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </td>
-                <td style={{ padding:"4px 8px" }}>
-                  <input value={row.driveLink} onChange={e => update(row.id,"driveLink",e.target.value)}
-                    placeholder="drive.google.com/..."
-                    style={{ background:C.surface, border:`1px solid ${C.border2}`, borderRadius:6,
-                      color:C.cyan, padding:"6px 8px", fontSize:11, width:190, fontFamily:"monospace" }} />
-                </td>
-                <td style={{ padding:"4px 8px" }}>
-                  <input value={row.title} onChange={e => update(row.id,"title",e.target.value)}
-                    placeholder="Video title..."
-                    style={{ background:C.surface, border:`1px solid ${C.border2}`, borderRadius:6,
-                      color:C.text, padding:"6px 8px", fontSize:12, width:180 }} />
-                </td>
-                <td style={{ padding:"4px 8px" }}>
-                  <input type="date" value={row.schedDate} onChange={e => update(row.id,"schedDate",e.target.value)}
-                    style={{ background:C.surface, border:`1px solid ${C.border2}`, borderRadius:6,
-                      color:C.text, padding:"6px 8px", fontSize:12 }} />
-                </td>
-                <td style={{ padding:"4px 8px" }}>
-                  <input type="time" value={row.schedTime} onChange={e => update(row.id,"schedTime",e.target.value)}
-                    style={{ background:C.surface, border:`1px solid ${C.border2}`, borderRadius:6,
-                      color:C.text, padding:"6px 8px", fontSize:12 }} />
-                </td>
-                <td style={{ padding:"4px 8px" }}>
-                  <button onClick={() => removeRow(row.id)}
-                    style={{ background:"none", border:`1px solid ${C.red}40`,
-                      borderRadius:6, color:C.red, cursor:"pointer", padding:"4px 8px", fontSize:12 }}>✕</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {/* Rows — card per row (better than cramped table) */}
+      <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:24 }}>
+        {rows.map((row, i) => (
+          <Card key={row.id} style={{ border:`1px solid ${row.instant ? C.green+"40" : C.blue+"40"}` }}>
+            <div style={{ display:"flex", gap:10, alignItems:"flex-start", flexWrap:"wrap" }}>
+              {/* Row number */}
+              <div style={{ width:28, height:28, borderRadius:"50%", background:C.border2,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:12, fontWeight:700, flexShrink:0, marginTop:2, color:C.muted }}>
+                {i+1}
+              </div>
+
+              {/* Channel */}
+              <div style={{ flex:"0 0 160px" }}>
+                <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Channel</div>
+                <select value={row.channelId} onChange={e => update(row.id,"channelId",e.target.value)} style={inpStyle(160)}>
+                  <option value="">-- Select --</option>
+                  {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+
+              {/* Drive link */}
+              <div style={{ flex:"1 1 220px" }}>
+                <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Google Drive Link</div>
+                <input value={row.driveLink} onChange={e => update(row.id,"driveLink",e.target.value)}
+                  placeholder="https://drive.google.com/file/d/..."
+                  style={{ ...inpStyle(), color:C.cyan, fontFamily:"monospace", fontSize:11 }} />
+              </div>
+
+              {/* Title */}
+              <div style={{ flex:"1 1 200px" }}>
+                <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Video Title</div>
+                <input value={row.title} onChange={e => update(row.id,"title",e.target.value)}
+                  placeholder="Video ka title..." style={inpStyle()} />
+              </div>
+
+              {/* Privacy */}
+              <div style={{ flex:"0 0 110px" }}>
+                <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Privacy</div>
+                <select value={row.privacy} onChange={e => update(row.id,"privacy",e.target.value)} style={inpStyle(110)}>
+                  {["public","private","unlisted"].map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+
+              {/* Instant toggle */}
+              <div style={{ flex:"0 0 120px" }}>
+                <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:6, textTransform:"uppercase" }}>Publish</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                  <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
+                    <input type="radio" checked={row.instant} onChange={() => update(row.id,"instant",true)}
+                      style={{ accentColor:C.green }} />
+                    <span style={{ fontSize:12, color:C.green, fontWeight:700 }}>⚡ Abhi</span>
+                  </label>
+                  <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
+                    <input type="radio" checked={!row.instant} onChange={() => update(row.id,"instant",false)}
+                      style={{ accentColor:C.yellow }} />
+                    <span style={{ fontSize:12, color:C.yellow, fontWeight:700 }}>📅 Schedule</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Date/Time — show only if not instant */}
+              {!row.instant && (
+                <div style={{ flex:"0 0 200px" }}>
+                  <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Date & Time</div>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <input type="date" value={row.schedDate} onChange={e => update(row.id,"schedDate",e.target.value)}
+                      style={{ ...inpStyle(110), fontSize:11 }} />
+                    <input type="time" value={row.schedTime} onChange={e => update(row.id,"schedTime",e.target.value)}
+                      style={{ ...inpStyle(80), fontSize:11 }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Thumbnail */}
+              <div style={{ flex:"0 0 140px" }}>
+                <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:4, textTransform:"uppercase" }}>Thumbnail</div>
+                <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer",
+                  border:`1px dashed ${C.purple}60`, borderRadius:7, padding:"6px 8px",
+                  background:`${C.purple}08` }}>
+                  {row.thumbFile
+                    ? <img src={URL.createObjectURL(row.thumbFile)} alt=""
+                        style={{ width:40, height:24, objectFit:"cover", borderRadius:4 }} />
+                    : <span style={{ fontSize:18 }}>🖼️</span>
+                  }
+                  <span style={{ fontSize:11, color:C.purple, fontWeight:600 }}>
+                    {row.thumbFile ? row.thumbFile.name.slice(0,14)+"…" : "Upload"}
+                  </span>
+                  <input type="file" accept="image/*" style={{ display:"none" }}
+                    onChange={e => { const f=e.target.files?.[0]; if(f) update(row.id,"thumbFile",f); }} />
+                </label>
+                {row.thumbFile && (
+                  <button onClick={() => update(row.id,"thumbFile",null)}
+                    style={{ fontSize:10, color:C.muted, background:"none", border:"none",
+                      cursor:"pointer", marginTop:2, padding:0 }}>✕ Remove</button>
+                )}
+              </div>
+
+              {/* Delete row */}
+              <div style={{ display:"flex", alignItems:"center", marginTop:20 }}>
+                <button onClick={() => removeRow(row.id)}
+                  style={{ background:"none", border:`1px solid ${C.red}40`, borderRadius:6,
+                    color:C.red, cursor:"pointer", padding:"5px 10px", fontSize:12 }}>✕</button>
+              </div>
+            </div>
+          </Card>
+        ))}
       </div>
 
-      <div style={{ fontWeight:800, fontSize:16, marginBottom:12 }}>
+      {/* Queue */}
+      <div style={{ fontWeight:800, fontSize:16, marginBottom:12, display:"flex", alignItems:"center", gap:10 }}>
         ⏳ Upload Queue <Badge color={C.yellow}>{queue.length} total</Badge>
       </div>
       {queue.length===0 ? (
         <Card style={{ textAlign:"center", padding:30, color:C.muted }}>
           <div style={{ fontSize:32, marginBottom:8 }}>📭</div>
-          <div>Queue empty — Upload ya Bulk Schedule se add karo</div>
+          <div>Queue empty — upar se videos add karo</div>
         </Card>
       ) : (
         <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
           {queue.map(item => (
             <Card key={item.id}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4, flexWrap:"wrap" }}>
                     <StatusDot status={item.status} />
                     <span style={{ fontWeight:700, fontSize:13 }}>{item.title||"(No title)"}</span>
                     {!item.approved && <Badge color={C.yellow}>⏳ Approval Pending</Badge>}
                     {item.approved && item.status==="queued" && <Badge color={C.green}>✓ Approved</Badge>}
                     {item.status==="done" && item.yt_video_id && (
                       <a href={`https://youtu.be/${item.yt_video_id}`} target="_blank" rel="noreferrer"
-                        style={{ color:C.red, fontSize:11 }}>▶ YouTube</a>
+                        style={{ color:C.red, fontSize:11, fontWeight:700 }}>▶ YouTube pe dekho</a>
                     )}
                   </div>
                   <div style={{ fontSize:11, color:C.muted }}>
-                    📺 {item.channels?.name} • 📅 {item.sched_date||"Aaj"} {item.sched_time} •
+                    📺 {item.channels?.name} •
+                    📅 {item.sched_date ? `${item.sched_date} ${item.sched_time}` : "Instant"} •
                     🔒 {item.privacy}
                   </div>
                   {item.error_msg && (
-                    <div style={{ fontSize:11, color:C.red, marginTop:4 }}>❌ {item.error_msg}</div>
+                    <div style={{ fontSize:11, color:C.red, marginTop:4 }}>
+                      ❌ {item.error_msg}
+                      {item.error_msg.includes("invalid_grant") && (
+                        <span style={{ color:C.yellow, marginLeft:8 }}>
+                          → OAuth token galat/expired hai — Channel Config mein refresh token dobara set karo
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
-                <div style={{ display:"flex", gap:6 }}>
+                <div style={{ display:"flex", gap:6, flexShrink:0 }}>
                   {!item.approved && (user.role==="admin"||user.role==="manager") && (
                     <Btn small color={C.yellow} onClick={() => approveItem(item.id)}>✓ Approve</Btn>
                   )}
-                  {item.approved && item.status==="queued" && (user.role==="admin"||user.role==="manager"||user.role==="uploader") && (
+                  {item.approved && item.status==="queued" && (
                     <Btn small color={C.blue} onClick={() => triggerUpload(item.id)}>▶ Upload</Btn>
                   )}
                   {item.status==="uploading" && <Badge color={C.cyan}>🔄 Uploading…</Badge>}
@@ -1495,6 +1829,282 @@ function BulkScheduleTab({ channels, queue, setQueue, user, toast, approveItem, 
               </div>
             </Card>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Video Manager Tab (dedicated per-channel video view) ──────────────────
+function VideoManagerTab({ channels, C, user, toast }) {
+  const [selChId,  setSelChId]  = useState(channels[0]?.id || "");
+  const [videos,   setVideos]   = useState({});
+  const [loading,  setLoading]  = useState({});
+  const [plModal,  setPlModal]  = useState(false);
+  const [plForm,   setPlForm]   = useState({ title:"", description:"", privacy:"public" });
+  const [plSaving, setPlSaving] = useState(false);
+  const [search,   setSearch]   = useState("");
+  const [filterPr, setFilterPr] = useState("all");  // all / public / private / unlisted
+
+  const selCh = channels.find(c => c.id === selChId);
+
+  const loadVideos = async (chId) => {
+    if (loading[chId] || videos[chId]) return;
+    setLoading(p => ({...p,[chId]:true}));
+    try {
+      const { data } = await api.get(`/channels/${chId}/videos`);
+      setVideos(p => ({...p,[chId]:data}));
+    } catch(e) {
+      toast(e.response?.data?.error || "Videos load nahi huyi", "error");
+    }
+    setLoading(p => ({...p,[chId]:false}));
+  };
+
+  const refreshVideos = (chId) => {
+    setVideos(p => { const n={...p}; delete n[chId]; return n; });
+    loadVideos(chId);
+  };
+
+  useEffect(() => { if (selChId) loadVideos(selChId); }, [selChId]);
+
+  const createPlaylist = async () => {
+    if (!plForm.title.trim()) { toast("Playlist ka title daalo", "error"); return; }
+    setPlSaving(true);
+    try {
+      const { data } = await api.post(`/channels/${selChId}/playlists`, plForm);
+      toast(`✅ Playlist "${data.title || plForm.title}" create ho gayi! ID: ${data.playlist_id}`);
+      setPlModal(false);
+      setPlForm({ title:"", description:"", privacy:"public" });
+    } catch(e) {
+      toast(e.response?.data?.error || "Playlist create nahi hui", "error");
+    }
+    setPlSaving(false);
+  };
+
+  const chData   = videos[selChId];
+  const allVideos = chData?.recent_videos || [];
+  const filtered  = allVideos.filter(v => {
+    const matchSearch = !search || v.title?.toLowerCase().includes(search.toLowerCase());
+    const matchPr     = filterPr === "all" || v.privacy === filterPr;
+    return matchSearch && matchPr;
+  });
+
+  return (
+    <div style={{ display:"grid", gridTemplateColumns:"240px 1fr", gap:16, minHeight:"70vh" }}>
+
+      {/* ── Left: Channel sidebar ── */}
+      <div>
+        <div style={{ fontWeight:700, fontSize:13, color:C.muted, marginBottom:10,
+          textTransform:"uppercase", letterSpacing:0.5 }}>Channels</div>
+        {channels.length === 0 && (
+          <div style={{ fontSize:12, color:C.muted, padding:12 }}>
+            Pehle Channels tab mein channel add karo
+          </div>
+        )}
+        {channels.map(ch => (
+          <div key={ch.id} onClick={() => setSelChId(ch.id)} style={{
+            padding:"12px 14px", marginBottom:8, borderRadius:10, cursor:"pointer",
+            background: selChId===ch.id ? `${C.blue}18` : C.surface,
+            border: `1px solid ${selChId===ch.id ? C.blue+"60" : C.border}`,
+            transition:"all 0.15s",
+          }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
+                background: ch.enabled ? C.green : C.muted }} />
+              <div style={{ fontWeight:700, fontSize:13, color:C.text,
+                overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                {ch.name}
+              </div>
+            </div>
+            <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{ch.niche||"No niche"}</div>
+            {loading[ch.id] && <div style={{ fontSize:11, color:C.cyan, marginTop:3 }}>⏳ Loading...</div>}
+            {videos[ch.id] && (
+              <div style={{ marginTop:6, display:"flex", gap:6, flexWrap:"wrap" }}>
+                <Badge color={C.blue}>{videos[ch.id].total_videos} vids</Badge>
+                {!videos[ch.id].hidden_subs && (
+                  <Badge color={C.green}>{Number(videos[ch.id].subscribers||0).toLocaleString()} subs</Badge>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* ── Right: Video list ── */}
+      <div>
+        {!selCh ? (
+          <Card style={{ textAlign:"center", padding:60, color:C.muted }}>
+            <div style={{ fontSize:40, marginBottom:12 }}>📺</div>
+            <div>Left se channel select karo</div>
+          </Card>
+        ) : (
+          <>
+            {/* Channel header */}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16, flexWrap:"wrap", gap:10 }}>
+              <div>
+                <div style={{ fontWeight:900, fontSize:18, color:C.text }}>{selCh.name}</div>
+                {chData && (
+                  <div style={{ fontSize:12, color:C.muted, marginTop:2, display:"flex", gap:14 }}>
+                    <span>🎬 {chData.total_videos} videos</span>
+                    <span>👁 {Number(chData.total_views||0).toLocaleString()} views</span>
+                    <span>👥 {chData.hidden_subs ? "Subs hidden" : Number(chData.subscribers||0).toLocaleString()+" subs"}</span>
+                  </div>
+                )}
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <Btn small color={C.purple} onClick={() => setPlModal(true)}>+ Create Playlist</Btn>
+                <Btn small outline onClick={() => refreshVideos(selChId)}>🔄 Refresh</Btn>
+              </div>
+            </div>
+
+            {/* Stats row */}
+            {chData && (
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:16 }}>
+                {[
+                  { label:"Videos",   val:chData.total_videos?.toLocaleString()||"0", color:C.red,    icon:"🎬" },
+                  { label:"Views",    val:Number(chData.total_views||0).toLocaleString(), color:C.blue, icon:"👁" },
+                  { label:"Subs",     val:chData.hidden_subs?"Hidden":Number(chData.subscribers||0).toLocaleString(), color:C.green, icon:"👥" },
+                  { label:"Avg Views",val:chData.total_videos>0?Math.round((chData.total_views||0)/chData.total_videos).toLocaleString():"0", color:C.purple, icon:"📈" },
+                ].map(s => (
+                  <div key={s.label} style={{ background:C.surface, borderRadius:10,
+                    padding:"10px 14px", border:`1px solid ${s.color}30` }}>
+                    <div style={{ fontSize:16, marginBottom:2 }}>{s.icon}</div>
+                    <div style={{ fontSize:18, fontWeight:900, color:s.color }}>{s.val}</div>
+                    <div style={{ fontSize:11, color:C.muted }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Search + filter bar */}
+            <div style={{ display:"flex", gap:10, marginBottom:14, alignItems:"center" }}>
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="🔍 Video title se search karo..."
+                style={{ flex:1, background:C.surface, border:`1px solid ${C.border2}`,
+                  borderRadius:8, color:C.text, padding:"8px 12px", fontSize:13, outline:"none" }} />
+              {["all","public","private","unlisted"].map(p => (
+                <Btn key={p} small color={filterPr===p ? C.blue : C.border2}
+                  outline={filterPr!==p} onClick={() => setFilterPr(p)}>
+                  {p==="all" ? "All" : p}
+                </Btn>
+              ))}
+              {chData && (
+                <span style={{ fontSize:12, color:C.muted, whiteSpace:"nowrap" }}>
+                  {filtered.length}/{allVideos.length}
+                </span>
+              )}
+            </div>
+
+            {/* Loading */}
+            {loading[selChId] && (
+              <Card style={{ textAlign:"center", padding:40, color:C.cyan }}>
+                <div style={{ fontSize:28, marginBottom:8 }}>⏳</div>
+                YouTube se videos fetch ho rahi hain...
+              </Card>
+            )}
+
+            {/* No OAuth */}
+            {!loading[selChId] && !chData && (
+              <Card style={{ textAlign:"center", padding:40, color:C.muted }}>
+                <div style={{ fontSize:36, marginBottom:10 }}>🔑</div>
+                <div style={{ fontWeight:700, marginBottom:6 }}>OAuth missing hai</div>
+                <div style={{ fontSize:13 }}>
+                  📺 Channels tab → ⚙ Configure → Client ID + Secret + Refresh Token fill karo → Save karo
+                </div>
+              </Card>
+            )}
+
+            {/* Video list */}
+            {!loading[selChId] && chData && (
+              filtered.length === 0 ? (
+                <Card style={{ textAlign:"center", padding:40, color:C.muted }}>
+                  <div style={{ fontSize:32, marginBottom:8 }}>🔍</div>
+                  <div>Koi video nahi mili "{search}"</div>
+                </Card>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {filtered.map(v => (
+                    <VideoRow key={v.id} v={v} chId={selChId} C={C} userRole={user.role}
+                      onEdit={async (upd, thumbFile) => {
+                        if (thumbFile) {
+                          const fd = new FormData();
+                          fd.append("thumbnail", thumbFile);
+                          Object.entries(upd).forEach(([k,v]) => fd.append(k, v));
+                          await api.patch(`/channels/${selChId}/yt-videos/${v.id}`, fd, { headers:{"Content-Type":"multipart/form-data"} });
+                        } else {
+                          await api.patch(`/channels/${selChId}/yt-videos/${v.id}`, upd);
+                        }
+                        setVideos(p => ({...p,[selChId]:{
+                          ...p[selChId],
+                          recent_videos: p[selChId].recent_videos.map(rv => rv.id===v.id ? {...rv,...upd} : rv),
+                        }}));
+                        toast("✅ Video YouTube pe update ho gayi!");
+                      }}
+                      onDelete={async () => {
+                        if (!confirm(`"${v.title}" ko YouTube se permanently delete karo?`)) return;
+                        await api.delete(`/channels/${selChId}/yt-videos/${v.id}`);
+                        setVideos(p => ({...p,[selChId]:{
+                          ...p[selChId],
+                          recent_videos: p[selChId].recent_videos.filter(rv => rv.id!==v.id),
+                          total_videos: Math.max(0,(p[selChId].total_videos||1)-1),
+                        }}));
+                        toast(`🗑 "${v.title}" delete ho gayi`);
+                      }}
+                    />
+                  ))}
+                </div>
+              )
+            )}
+          </>
+        )}
+      </div>
+
+      {/* ── Playlist Modal ── */}
+      {plModal && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9999,
+          display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <div style={{ background:C.card, border:`1px solid ${C.purple}40`, borderRadius:16,
+            padding:28, width:460, boxShadow:"0 20px 60px rgba(0,0,0,0.6)" }}>
+            <div style={{ fontWeight:800, fontSize:17, color:C.text, marginBottom:20 }}>
+              ➕ New YouTube Playlist — {selCh?.name}
+            </div>
+
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase" }}>Playlist Title *</div>
+              <input value={plForm.title} onChange={e => setPlForm(p => ({...p,title:e.target.value}))}
+                placeholder="Jaise: Lo-fi Study Music 2025"
+                style={{ width:"100%", background:C.surface, border:`1px solid ${C.border2}`,
+                  borderRadius:8, color:C.text, padding:"9px 12px", fontSize:13,
+                  boxSizing:"border-box", outline:"none" }} />
+            </div>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase" }}>Description</div>
+              <textarea value={plForm.description} onChange={e => setPlForm(p => ({...p,description:e.target.value}))}
+                placeholder="Playlist ki description (optional)"
+                style={{ width:"100%", background:C.surface, border:`1px solid ${C.border2}`,
+                  borderRadius:8, color:C.text, padding:"9px 12px", fontSize:12,
+                  minHeight:80, resize:"vertical", boxSizing:"border-box", fontFamily:"inherit", outline:"none" }} />
+            </div>
+            <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:11, color:C.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase" }}>Privacy</div>
+              <select value={plForm.privacy} onChange={e => setPlForm(p => ({...p,privacy:e.target.value}))}
+                style={{ width:"100%", background:C.surface, border:`1px solid ${C.border2}`,
+                  borderRadius:8, color:C.text, padding:"9px 12px", fontSize:13, outline:"none" }}>
+                {["public","private","unlisted"].map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+
+            <div style={{ display:"flex", gap:10 }}>
+              <Btn color={C.purple} disabled={plSaving} onClick={createPlaylist} style={{ flex:1 }}>
+                {plSaving ? "⏳ Creating..." : "✅ Playlist Create Karo"}
+              </Btn>
+              <Btn outline color={C.muted} onClick={() => setPlModal(false)}>Cancel</Btn>
+            </div>
+
+            <div style={{ marginTop:12, fontSize:11, color:C.muted }}>
+              💡 Playlist YouTube pe create hogi — phir Upload tab mein videos isme add kar sakte ho
+            </div>
+          </div>
         </div>
       )}
     </div>

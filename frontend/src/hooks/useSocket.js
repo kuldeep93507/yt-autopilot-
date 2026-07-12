@@ -9,7 +9,8 @@ export function useSocket(handlers = {}) {
 
   useEffect(() => {
     if (!socket) {
-      socket = io({ path: "/socket.io" });
+      const backendUrl = import.meta.env.VITE_API_URL || "";
+      socket = io(backendUrl, { path: "/socket.io" });
     }
 
     const events = Object.keys(handlersRef.current);

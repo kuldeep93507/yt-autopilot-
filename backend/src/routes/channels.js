@@ -1,8 +1,12 @@
 import { Router } from "express";
 import { youtube as createYoutube } from "@googleapis/youtube";
 import { OAuth2Client } from "google-auth-library";
+import multer from "multer";
+import { Readable } from "stream";
 import supabase from "../db/supabase.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const router = Router();
 router.use(requireAuth);
@@ -154,16 +158,15 @@ router.get("/:id/videos", async (req, res) => {
   }
 });
 
-// ── PATCH /api/channels/:id/yt-videos/:videoId — edit YT video metadata ────
-router.patch("/:id/yt-videos/:videoId", requireRole("admin","manager"), async (req, res) => {
+// ── PATCH /api/channels/:id/yt-videos/:videoId — edit YT video metadata + thumbnail ──
+router.patch("/:id/yt-videos/:videoId", requireRole("admin","manager"), upload.single("thumbnail"), async (req, res) => {
   const { data: ch } = await supabase.from("channels").select("*").eq("id", req.params.id).single();
   if (!ch || !ch.refresh_token) return res.status(400).json({ error: "Channel not configured" });
 
   const { title, description, tags, privacy } = req.body;
   try {
-    const yt = createYoutube({ version: "v3", auth: buildOAuth(ch) });
-    // First get current snippet (categoryId required)
-    const cur = await yt.videos.list({ part: ["snippet","status"], id: [req.params.videoId] });
+    const yt   = createYoutube({ version: "v3", auth: buildOAuth(ch) });
+    const cur  = await yt.videos.list({ part: ["snippet","status"], id: [req.params.videoId] });
     const existing = cur.data.items?.[0];
     if (!existing) return res.status(404).json({ error: "Video not found on YouTube" });
 
@@ -183,6 +186,16 @@ router.patch("/:id/yt-videos/:videoId", requireRole("admin","manager"), async (r
         },
       },
     });
+
+    // Upload thumbnail if provided
+    if (req.file) {
+      const stream = Readable.from(req.file.buffer);
+      await yt.thumbnails.set({
+        videoId: req.params.videoId,
+        media:   { mimeType: req.file.mimetype, body: stream },
+      });
+    }
+
     res.json({ success: true, video: updated.data });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -197,6 +210,27 @@ router.delete("/:id/yt-videos/:videoId", requireRole("admin"), async (req, res) 
     const yt = createYoutube({ version: "v3", auth: buildOAuth(ch) });
     await yt.videos.delete({ id: req.params.videoId });
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/channels/:id/playlists — create YouTube playlist ──────────────
+router.post("/:id/playlists", requireRole("admin","manager"), async (req, res) => {
+  const { data: ch } = await supabase.from("channels").select("*").eq("id", req.params.id).single();
+  if (!ch || !ch.refresh_token) return res.status(400).json({ error: "Channel OAuth not configured" });
+  const { title, description = "", privacy = "public" } = req.body;
+  if (!title) return res.status(400).json({ error: "Playlist title required" });
+  try {
+    const yt = createYoutube({ version: "v3", auth: buildOAuth(ch) });
+    const { data: pl } = await yt.playlists.insert({
+      part: ["snippet","status"],
+      requestBody: {
+        snippet: { title, description },
+        status:  { privacyStatus: privacy },
+      },
+    });
+    res.json({ playlist_id: pl.id, title: pl.snippet?.title, privacy });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
