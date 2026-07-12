@@ -26,10 +26,23 @@ import { requireAuth, requireRole } from "./middleware/auth.js";
 const app    = express();
 const server = createServer(app);
 
+// ── CORS origins ───────────────────────────────────────────────────────────
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "https://yt-autopilot-indol.vercel.app",
+  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
+];
+const corsOpts = {
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: ${origin} not allowed`));
+  },
+  credentials: true,
+};
+
 // ── Socket.io ──────────────────────────────────────────────────────────────
-export const io = new SocketIO(server, {
-  cors: { origin: process.env.FRONTEND_URL || "http://localhost:5173", credentials: true },
-});
+export const io = new SocketIO(server, { cors: corsOpts });
 
 io.on("connection", (socket) => {
   console.log("🔌 Client connected:", socket.id);
@@ -38,7 +51,7 @@ io.on("connection", (socket) => {
 
 // ── Middleware ─────────────────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173", credentials: true }));
+app.use(cors(corsOpts));
 app.use(express.json());
 app.use(morgan("dev"));
 
@@ -75,10 +88,14 @@ app.use((err, _req, res, _next) => {
   res.status(err.status || 500).json({ error: err.message || "Internal server error" });
 });
 
+// ── Crash protection — prevent unhandled errors from killing the process ────
+process.on("uncaughtException",      (err) => console.error("💥 UncaughtException:", err));
+process.on("unhandledRejection",     (err) => console.error("💥 UnhandledRejection:", err));
+
 // ── Start ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, async () => {
   console.log(`\n🚀 YT AutoPilot backend running on http://localhost:${PORT}`);
-  await setupWorker();
-  startDriveWatcher();
+  try { await setupWorker(); }       catch(e) { console.error("Worker setup error:", e.message); }
+  try { startDriveWatcher(); }       catch(e) { console.error("Drive watcher error:", e.message); }
 });
