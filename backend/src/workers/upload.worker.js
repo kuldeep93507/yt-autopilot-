@@ -40,7 +40,9 @@ export async function addUploadJob(queueItem) {
 
 function getDelay(schedDate, schedTime) {
   if (!schedDate || !schedTime) return 0;
-  const target = new Date(`${schedDate}T${schedTime}:00`);
+  // Explicit IST offset — server runs in UTC (Render), user schedules in IST.
+  // Without this, uploads fire 5.5 hours off.
+  const target = new Date(`${schedDate}T${schedTime}:00+05:30`);
   const diff   = target.getTime() - Date.now();
   return diff > 0 ? diff : 0;
 }

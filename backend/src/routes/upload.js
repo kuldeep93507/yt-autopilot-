@@ -5,16 +5,22 @@ import { OAuth2Client } from "google-auth-library";
 import { Readable } from "stream";
 import supabase from "../db/supabase.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireChannelAccess } from "../middleware/channelAccess.js";
 import { logActivity } from "../services/log.service.js";
+import { screenVideo } from "../services/safety.service.js";
+import { trackQuotaUsage } from "../services/quota.service.js";
 import { io } from "../server.js";
 
 const router = Router();
 router.use(requireAuth);
 
-// Multer — memory storage (PC + phone se direct upload)
+// Multer — memory storage (PC + phone se direct upload).
+// 200MB cap: the whole file sits in RAM and Render free tier has 512MB total,
+// so a bigger buffer OOM-kills the server mid-upload. Bade files ke liye
+// Drive-link path use karo (wo stream karta hai, RAM mein nahi rakhta).
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB max
+  limits: { fileSize: 200 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith("video/")) cb(null, true);
     else cb(new Error("Only video files allowed"));
@@ -22,8 +28,11 @@ const upload = multer({
 });
 
 // POST /api/upload/file  — direct video file → YouTube
+// Access check runs AFTER multer: channel_id multipart body mein hai, jo
+// multer parse karne se pehle available nahi hota.
 router.post("/file", requireRole("admin", "manager", "uploader"),
   upload.single("video"),
+  requireChannelAccess("channel_id"),
   async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No video file uploaded" });
 
@@ -33,6 +42,16 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
     const { data: ch } = await supabase.from("channels").select("*").eq("id", channel_id).single();
     if (!ch) return res.status(404).json({ error: "Channel not found" });
     if (!ch.refresh_token) return res.status(400).json({ error: "Channel has no OAuth token" });
+
+    // Same pre-upload safety screen as the Drive-link path — direct uploads
+    // shouldn't be a backdoor around the copyright/policy agent.
+    const safety = await screenVideo({
+      channelId: channel_id, channelName: ch.name, channelNiche: ch.niche,
+      title, description, tags,
+    });
+    if (safety.risk_level === "block") {
+      return res.status(422).json({ error: `Safety check blocked this upload: ${safety.reasons}`, safety });
+    }
 
     // Add to queue as "uploading"
     const { data: qItem } = await supabase.from("upload_queue").insert([{
@@ -62,7 +81,7 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
 
         let publishAt;
         if (sched_date && sched_time)
-          publishAt = new Date(`${sched_date}T${sched_time}:00`).toISOString();
+          publishAt = new Date(`${sched_date}T${sched_time}:00+05:30`).toISOString();
 
         const uploadRes = await yt.videos.insert({
           part: ["snippet", "status"],
@@ -86,6 +105,7 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
         });
 
         const ytVideoId = uploadRes.data.id;
+        await trackQuotaUsage(channel_id, ch.name, 1600); // videos.insert quota cost
         await supabase.from("upload_queue").update({
           status: "done", yt_video_id: ytVideoId, done_at: new Date().toISOString(),
         }).eq("id", qItem?.id);

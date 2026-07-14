@@ -50,7 +50,8 @@ export async function uploadToYouTube(queueItem) {
   // 4. Build scheduledStartTime if date+time provided
   let publishAt;
   if (queueItem.sched_date && queueItem.sched_time) {
-    publishAt = new Date(`${queueItem.sched_date}T${queueItem.sched_time}:00`).toISOString();
+    // IST offset explicit — UTC server pe warna 5.5 ghante ka shift aata hai
+    publishAt = new Date(`${queueItem.sched_date}T${queueItem.sched_time}:00+05:30`).toISOString();
   }
 
   // 5. YouTube upload

@@ -960,7 +960,7 @@ export default function Dashboard() {
                         <div style={{ fontSize:13, color:C.blue, fontWeight:700 }}>
                           Click karo ya drag & drop karo
                         </div>
-                        <div style={{ fontSize:11, color:C.muted }}>MP4, MOV, AVI, MKV — max 2GB</div>
+                        <div style={{ fontSize:11, color:C.muted }}>MP4, MOV, AVI, MKV — max 200MB (badi file? Drive link use karo)</div>
                         <input type="file" accept="video/*" style={{ display:"none" }}
                           onChange={e => {
                             const f = e.target.files?.[0];
