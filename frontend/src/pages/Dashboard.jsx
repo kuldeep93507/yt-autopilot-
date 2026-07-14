@@ -147,6 +147,33 @@ const Badge = ({ children, color=C.blue }) => (
     borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700 }}>{children}</span>
 );
 
+// Shows today's YouTube API quota usage per channel — surfaces the ~6
+// uploads/day practical ceiling before it silently blocks an upload.
+const QuotaBadge = ({ chId, C }) => {
+  const [quota, setQuota] = useState(null);
+  useEffect(() => {
+    api.get(`/channels/${chId}/quota`).then(({ data }) => setQuota(data)).catch(() => {});
+  }, [chId]);
+  if (!quota) return null;
+  const pct = quota.unitsUsed / quota.limit;
+  const color = pct >= 0.8 ? C.red : pct >= 0.5 ? C.yellow : C.green;
+  return <Badge color={color}>⚙ Quota: {quota.unitsUsed}/{quota.limit}</Badge>;
+};
+
+// Shows a warning badge if this channel has recent warn/block safety flags.
+const SafetyBadge = ({ chId, C }) => {
+  const [log, setLog] = useState(null);
+  useEffect(() => {
+    api.get(`/queue/safety/${chId}`).then(({ data }) => setLog(data)).catch(() => {});
+  }, [chId]);
+  if (!log) return null;
+  const recent = log.slice(0, 5);
+  const blocked = recent.some(l => l.risk_level === "block");
+  const warned  = recent.some(l => l.risk_level === "warn");
+  if (!blocked && !warned) return <Badge color={C.green}>🛡 Safe</Badge>;
+  return <Badge color={blocked ? C.red : C.yellow}>🛡 {blocked ? "Block flagged" : "Warning flagged"}</Badge>;
+};
+
 const Toggle = ({ value, onChange, label }) => (
   <label style={{ display:"flex", alignItems:"center", gap:10, cursor:"pointer" }}>
     <div onClick={() => onChange(!value)} style={{
@@ -180,7 +207,7 @@ const SectionHead = ({ children, action }) => (
 );
 
 // ── TABS ─────────────────────────────────────────────────────────────────
-const ALL_TABS = ["🏠 Dashboard","📺 Channels","📹 Videos","📁 Drive Watch","🚀 Upload","📅 Bulk Schedule","👥 Team","📊 Analytics","⚙️ Settings"];
+const ALL_TABS = ["🏠 Dashboard","📺 Channels","📹 Videos","🎯 Auto Content","📁 Drive Watch","🚀 Upload","📅 Bulk Schedule","👥 Team","📊 Analytics","⚙️ Settings"];
 const ADMIN_ONLY_TABS = ["👥 Team"];
 const T = (tabs, name) => tabs.indexOf(name);
 const NICHES = ["Lo-fi Music","Meditation & Sleep","Ambient Sounds","Study Music","Nature Sounds","Motivational","Tech News","Finance","Gaming","Cooking","Education","Comedy","Other"];
@@ -617,6 +644,8 @@ export default function Dashboard() {
                         <Badge color={ch.drive_folder_id ? C.green : C.yellow}>
                           {ch.drive_folder_id ? "✓ Drive" : "Drive: Set karo"}
                         </Badge>
+                        {ch.refresh_token && <QuotaBadge chId={ch.id} C={C} />}
+                        {ch.refresh_token && <SafetyBadge chId={ch.id} C={C} />}
 
                         <Toggle value={ch.enabled} onChange={v => toggleOnOff(ch.id, v)} label="Active" />
 
@@ -801,6 +830,11 @@ export default function Dashboard() {
         {/* ── VIDEOS ── */}
         {tab===T(TABS,"📹 Videos") && (
           <VideoManagerTab channels={channels} C={C} user={user} toast={toast} />
+        )}
+
+        {/* ── AUTO CONTENT (trending → script pipeline) ── */}
+        {tab===T(TABS,"🎯 Auto Content") && (
+          <AutoContentTab channels={channels} C={C} user={user} toast={toast} />
         )}
 
         {/* ── DRIVE WATCH ── */}
@@ -1159,67 +1193,7 @@ export default function Dashboard() {
 
         {/* ── ANALYTICS ── */}
         {tab===T(TABS,"📊 Analytics") && (
-          <div>
-            <SectionHead action={<Btn small onClick={loadSummary}>🔄 Refresh</Btn>}>📊 Analytics</SectionHead>
-            {summary && (
-              <>
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14, marginBottom:20 }}>
-                  {[
-                    { label:"Total Uploaded",   val:summary.totalUploaded, color:C.green,  sub:"All time" },
-                    { label:"Pending",          val:summary.inQueue,       color:C.yellow, sub:"In queue" },
-                    { label:"Drive Detected",   val:summary.driveDetected, color:C.purple, sub:"Auto-found" },
-                    { label:"Active Members",   val:summary.activeMembers, color:C.blue,   sub:"Team" },
-                  ].map(s => (
-                    <Card key={s.label} glow={s.color}>
-                      <div style={{ fontSize:28, fontWeight:900, color:s.color }}>{s.val}</div>
-                      <div style={{ fontSize:13, color:C.text, marginTop:2 }}>{s.label}</div>
-                      <div style={{ fontSize:11, color:C.muted }}>{s.sub}</div>
-                    </Card>
-                  ))}
-                </div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-                  <Card>
-                    <div style={{ fontWeight:700, marginBottom:14 }}>📺 Per Channel Stats</div>
-                    {(summary.perChannel||[]).map(ch => (
-                      <div key={ch.id} style={{ marginBottom:12 }}>
-                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-                          <span style={{ fontSize:13, fontWeight:600 }}>{ch.name}</span>
-                          <div style={{ display:"flex", gap:6 }}>
-                            <Badge color={C.green}>{ch.uploaded} done</Badge>
-                            <Badge color={C.yellow}>{ch.pending} pending</Badge>
-                          </div>
-                        </div>
-                        <div style={{ height:6, background:C.surface, borderRadius:3, overflow:"hidden" }}>
-                          <div style={{ height:"100%",
-                            width: ch.uploaded > 0
-                              ? `${Math.min((ch.uploaded/(ch.uploaded+ch.pending||1))*100,100)}%` : "0%",
-                            background:`linear-gradient(90deg,${C.green},${C.cyan})`,
-                            borderRadius:3, transition:"width 0.3s" }} />
-                        </div>
-                      </div>
-                    ))}
-                  </Card>
-                  <Card style={{ maxHeight:340, overflowY:"auto" }}>
-                    <div style={{ fontWeight:700, marginBottom:14 }}>📋 Activity Log</div>
-                    {(summary.logs||[]).map((l,i) => (
-                      <div key={l.id} style={{ paddingBottom:8, marginBottom:8,
-                        borderBottom: i<(summary.logs.length-1)?`1px solid ${C.border}`:"none" }}>
-                        <div style={{ display:"flex", alignItems:"flex-start", gap:6 }}>
-                          <StatusDot status={l.status} />
-                          <div style={{ flex:1 }}>
-                            <div style={{ fontSize:12, color:C.text }}>{l.message}</div>
-                            <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>
-                              {new Date(l.created_at).toLocaleString("en-IN")}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </Card>
-                </div>
-              </>
-            )}
-          </div>
+          <AnalyticsTab channels={channels} summary={summary} loadSummary={loadSummary} C={C} toast={toast} />
         )}
 
         {/* ── SETTINGS ── */}
@@ -1518,6 +1492,294 @@ function TeamMemberCard({ m, currentUser, C, onRoleChange, onToggleActive, onDel
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ── Analytics Tab — Real YouTube Data ────────────────────────────────────
+function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
+  const [selChId,  setSelChId]  = useState(channels[0]?.id || "");
+  const [ytData,   setYtData]   = useState({});   // chId → analytics response
+  const [loading,  setLoading]  = useState({});
+  const [days,     setDays]     = useState(28);
+
+  const fmtNum   = (n) => Number(n||0).toLocaleString("en-IN");
+  const fmtHrs   = (m) => { const h=Math.floor((m||0)/60); const mn=Math.round((m||0)%60); return h>0?`${h}h ${mn}m`:`${mn}m`; };
+  const fmtMoney = (v) => v != null ? `$${Number(v).toFixed(2)}` : "N/A";
+  const fmtDur   = (s) => { const m=Math.floor((s||0)/60); const sec=Math.round((s||0)%60); return `${m}:${String(sec).padStart(2,"0")}`; };
+
+  const loadYtAnalytics = async (chId, d) => {
+    setLoading(p => ({...p,[chId]:true}));
+    try {
+      const { data } = await api.get(`/analytics/youtube/${chId}?days=${d||days}`);
+      setYtData(p => ({...p,[chId]:data}));
+    } catch(e) {
+      toast("YouTube Analytics error: " + (e.response?.data?.error || e.message), "error");
+    }
+    setLoading(p => ({...p,[chId]:false}));
+  };
+
+  useEffect(() => {
+    if (selChId) loadYtAnalytics(selChId, days);
+  }, [selChId, days]);
+
+  const data   = ytData[selChId];
+  const totals = data?.totals || {};
+  const ch     = data?.channel || {};
+  const videos = data?.videos  || [];
+  const videoAnalytics = data?.videoAnalytics || [];
+
+  // Mini bar chart from dailyChart
+  const dailyChart = data?.dailyChart || [];
+  const maxViews   = Math.max(...dailyChart.map(d => Number(d.views||0)), 1);
+
+  return (
+    <div>
+      {/* ── Top bar ── */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18, flexWrap:"wrap", gap:10 }}>
+        <div style={{ fontWeight:900, fontSize:18, color:C.text }}>📊 YouTube Analytics</div>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          {/* Period selector */}
+          {[7,28,90].map(d => (
+            <button key={d} onClick={() => setDays(d)} style={{
+              padding:"5px 12px", borderRadius:7, fontSize:12, fontWeight:700, cursor:"pointer",
+              background: days===d ? C.blue : C.surface,
+              border: `1px solid ${days===d ? C.blue : C.border}`,
+              color: days===d ? "#fff" : C.muted,
+            }}>Last {d}d</button>
+          ))}
+          <button onClick={() => loadYtAnalytics(selChId, days)} style={{
+            padding:"5px 12px", borderRadius:7, fontSize:12, fontWeight:700, cursor:"pointer",
+            background:C.surface, border:`1px solid ${C.border}`, color:C.muted,
+          }}>🔄 Refresh</button>
+        </div>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"220px 1fr", gap:16 }}>
+
+        {/* ── Channel sidebar ── */}
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:8, textTransform:"uppercase", letterSpacing:0.5 }}>Channels</div>
+          {channels.map(ch => (
+            <div key={ch.id} onClick={() => setSelChId(ch.id)} style={{
+              padding:"10px 12px", marginBottom:6, borderRadius:10, cursor:"pointer",
+              background: selChId===ch.id ? `${C.blue}18` : C.surface,
+              border:`1px solid ${selChId===ch.id ? C.blue+"60" : C.border}`,
+              transition:"all 0.15s",
+            }}>
+              <div style={{ fontWeight:700, fontSize:13, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{ch.name}</div>
+              <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{ch.niche||"No niche"}</div>
+              {!ch.refresh_token && <div style={{ fontSize:10, color:C.red, marginTop:3 }}>⚠ OAuth missing</div>}
+              {loading[ch.id] && <div style={{ fontSize:10, color:C.cyan, marginTop:3 }}>⏳ Loading...</div>}
+            </div>
+          ))}
+
+          {/* App summary */}
+          {summary && (
+            <div style={{ marginTop:16, padding:"12px", background:C.surface, borderRadius:10, border:`1px solid ${C.border}` }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:8, textTransform:"uppercase" }}>App Stats</div>
+              {[
+                { l:"Uploaded",  v:summary.totalUploaded, c:C.green  },
+                { l:"In Queue",  v:summary.inQueue,       c:C.yellow },
+                { l:"Team",      v:summary.activeMembers, c:C.blue   },
+              ].map(s => (
+                <div key={s.l} style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                  <span style={{ fontSize:12, color:C.muted }}>{s.l}</span>
+                  <span style={{ fontSize:13, fontWeight:800, color:s.c }}>{s.v}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── Main analytics area ── */}
+        <div>
+          {loading[selChId] && (
+            <div style={{ textAlign:"center", padding:80, color:C.muted }}>
+              <div style={{ fontSize:36, marginBottom:12 }}>⏳</div>
+              <div style={{ fontWeight:700 }}>YouTube se data fetch ho raha hai...</div>
+              <div style={{ fontSize:12, marginTop:6 }}>Thoda wait karo</div>
+            </div>
+          )}
+
+          {!loading[selChId] && !data && (
+            <div style={{ textAlign:"center", padding:80, color:C.muted }}>
+              <div style={{ fontSize:40, marginBottom:12 }}>📊</div>
+              <div style={{ fontWeight:700 }}>Channel select karo analytics dekhne ke liye</div>
+              <div style={{ fontSize:12, marginTop:6, color:C.yellow }}>
+                ⚠ Channel ka OAuth token set hona chahiye
+              </div>
+            </div>
+          )}
+
+          {!loading[selChId] && data && (
+            <>
+              {/* Channel header */}
+              <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:18 }}>
+                {ch.thumbnail && (
+                  <img src={ch.thumbnail} alt="" style={{ width:52, height:52, borderRadius:"50%", border:`2px solid ${C.red}` }} />
+                )}
+                <div>
+                  <div style={{ fontWeight:900, fontSize:18, color:C.text }}>{ch.name}</div>
+                  <div style={{ fontSize:12, color:C.muted, marginTop:2 }}>
+                    👥 {ch.hiddenSubs ? "Subs hidden" : fmtNum(ch.subscribers) + " subscribers"} &nbsp;•&nbsp;
+                    🎬 {fmtNum(ch.totalVideos)} videos &nbsp;•&nbsp;
+                    👁 {fmtNum(ch.totalViews)} total views
+                  </div>
+                </div>
+                {!data.analyticsAvailable && (
+                  <div style={{ marginLeft:"auto", padding:"6px 12px", background:`${C.yellow}20`,
+                    border:`1px solid ${C.yellow}60`, borderRadius:8, fontSize:11, color:C.yellow }}>
+                    ⚠ YouTube Analytics API enable nahi — Basic stats only
+                  </div>
+                )}
+              </div>
+
+              {/* KPI cards */}
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:18 }}>
+                {[
+                  { label:"Views",        val:fmtNum(totals.views),        sub:`Last ${days} days`, color:C.blue,   icon:"👁" },
+                  { label:"Watch Time",   val:fmtHrs(totals.watchMinutes), sub:`${fmtNum(totals.watchMinutes)} min`, color:C.cyan,   icon:"⏱" },
+                  { label:"Subs Gained",  val:"+"+fmtNum(totals.subscribersGained), sub:`-${fmtNum(totals.subscribersLost)} lost`, color:C.green,  icon:"👥" },
+                  { label:"Revenue",      val:fmtMoney(totals.estimatedRevenue), sub:"Estimated (YPP)", color:C.yellow, icon:"💰" },
+                ].map(s => (
+                  <div key={s.label} style={{ background:C.card, borderRadius:12, padding:"14px 16px",
+                    border:`1px solid ${s.color}30`, boxShadow:`0 0 16px ${s.color}10` }}>
+                    <div style={{ fontSize:20, marginBottom:4 }}>{s.icon}</div>
+                    <div style={{ fontSize:22, fontWeight:900, color:s.color, lineHeight:1 }}>{s.val}</div>
+                    <div style={{ fontSize:12, color:C.text, marginTop:4, fontWeight:600 }}>{s.label}</div>
+                    <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{s.sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Second row KPIs */}
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:18 }}>
+                {[
+                  { label:"Impressions",    val:fmtNum(totals.impressions),         color:C.purple, icon:"📢" },
+                  { label:"CTR",            val:`${(totals.avgCTR||0).toFixed(1)}%`, color:C.pink,   icon:"🎯" },
+                  { label:"Avg View Dur",   val:fmtDur(totals.avgViewDurationSec),  color:C.cyan,   icon:"⏱" },
+                  { label:"Likes",          val:fmtNum(totals.likes),               color:C.red,    icon:"👍" },
+                ].map(s => (
+                  <div key={s.label} style={{ background:C.surface, borderRadius:10, padding:"12px 14px",
+                    border:`1px solid ${s.color}30` }}>
+                    <div style={{ fontSize:16, marginBottom:3 }}>{s.icon}</div>
+                    <div style={{ fontSize:18, fontWeight:900, color:s.color }}>{s.val}</div>
+                    <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Daily chart */}
+              {dailyChart.length > 0 && (
+                <div style={{ background:C.card, borderRadius:12, padding:"16px 18px", marginBottom:18, border:`1px solid ${C.border}` }}>
+                  <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>📈 Daily Views — Last {days} Days</div>
+                  <div style={{ display:"flex", alignItems:"flex-end", gap:3, height:80, overflowX:"auto" }}>
+                    {dailyChart.map((row, i) => {
+                      const h = Math.max(4, Math.round((Number(row.views||0)/maxViews)*76));
+                      return (
+                        <div key={i} title={`${row.day}: ${fmtNum(row.views)} views`} style={{
+                          flex:"0 0 auto", width: dailyChart.length > 60 ? 6 : dailyChart.length > 30 ? 10 : 16,
+                          height:h, borderRadius:"3px 3px 0 0",
+                          background:`linear-gradient(180deg, ${C.blue}, ${C.cyan})`,
+                          cursor:"default", opacity:0.85,
+                          transition:"opacity 0.1s",
+                        }} />
+                      );
+                    })}
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:C.muted, marginTop:4 }}>
+                    <span>{dailyChart[0]?.day}</span>
+                    <span>{dailyChart[Math.floor(dailyChart.length/2)]?.day}</span>
+                    <span>{dailyChart[dailyChart.length-1]?.day}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Per-video analytics (from Analytics API) */}
+              {videoAnalytics.length > 0 && (
+                <div style={{ marginBottom:18 }}>
+                  <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>🎬 Top Videos — Analytics (Last {days} days)</div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                    {videoAnalytics.map((v, i) => (
+                      <div key={v.video||i} style={{ background:C.card, borderRadius:10, padding:"12px 16px",
+                        border:`1px solid ${C.border}`, display:"flex", alignItems:"center", gap:12 }}>
+                        {v.thumbnail && (
+                          <img src={v.thumbnail} alt="" style={{ width:80, height:45, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
+                        )}
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <a href={`https://youtu.be/${v.video}`} target="_blank" rel="noreferrer"
+                            style={{ fontWeight:700, fontSize:13, color:C.text, textDecoration:"none",
+                              display:"block", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                            {v.title}
+                          </a>
+                          <div style={{ display:"flex", gap:14, marginTop:5, flexWrap:"wrap" }}>
+                            <span style={{ fontSize:11, color:C.blue }}>👁 {fmtNum(v.views)} views</span>
+                            <span style={{ fontSize:11, color:C.cyan }}>⏱ {fmtHrs(v.estimatedMinutesWatched)} watched</span>
+                            <span style={{ fontSize:11, color:C.green }}>👍 {fmtNum(v.likes)}</span>
+                            <span style={{ fontSize:11, color:C.purple }}>💬 {fmtNum(v.comments)}</span>
+                            {v.estimatedRevenue != null && (
+                              <span style={{ fontSize:11, color:C.yellow }}>💰 {fmtMoney(v.estimatedRevenue)}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ textAlign:"right", flexShrink:0 }}>
+                          <div style={{ fontSize:16, fontWeight:900, color:C.blue }}>{fmtNum(v.views)}</div>
+                          <div style={{ fontSize:10, color:C.muted }}>views</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Basic video list (from Data API — always available) */}
+              {videoAnalytics.length === 0 && videos.length > 0 && (
+                <div>
+                  <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>🎬 Videos (YouTube Data API)</div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:8, maxHeight:500, overflowY:"auto" }}>
+                    {videos.slice(0, 20).map((v, i) => (
+                      <div key={v.id} style={{ background:C.card, borderRadius:10, padding:"12px 16px",
+                        border:`1px solid ${C.border}`, display:"flex", alignItems:"center", gap:12 }}>
+                        {v.thumbnail && (
+                          <img src={v.thumbnail} alt="" style={{ width:80, height:45, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
+                        )}
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <a href={`https://youtu.be/${v.id}`} target="_blank" rel="noreferrer"
+                            style={{ fontWeight:700, fontSize:13, color:C.text, textDecoration:"none",
+                              display:"block", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                            {v.title}
+                          </a>
+                          <div style={{ display:"flex", gap:12, marginTop:5, flexWrap:"wrap" }}>
+                            <span style={{ fontSize:11, color:C.blue }}>👁 {fmtNum(v.views)}</span>
+                            <span style={{ fontSize:11, color:C.green }}>👍 {fmtNum(v.likes)}</span>
+                            <span style={{ fontSize:11, color:C.purple }}>💬 {fmtNum(v.comments)}</span>
+                            <span style={{ fontSize:11, color:C.muted }}>
+                              {v.published ? new Date(v.published).toLocaleDateString("en-IN") : ""}
+                            </span>
+                          </div>
+                        </div>
+                        <div style={{ textAlign:"right", flexShrink:0 }}>
+                          <div style={{ fontSize:16, fontWeight:900, color:C.blue }}>{fmtNum(v.views)}</div>
+                          <div style={{ fontSize:10, color:C.muted }}>views</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {!data.analyticsAvailable && (
+                    <div style={{ marginTop:12, padding:"10px 14px", background:`${C.yellow}15`,
+                      borderRadius:8, fontSize:12, color:C.yellow, border:`1px solid ${C.yellow}40` }}>
+                      💡 Watch Time, Revenue aur CTR dekhne ke liye Google Cloud Console mein
+                      <strong> YouTube Analytics API</strong> enable karo → APIs & Services → Library → "YouTube Analytics API"
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1920,7 +2182,7 @@ function VideoManagerTab({ channels, C, user, toast }) {
             {loading[ch.id] && <div style={{ fontSize:11, color:C.cyan, marginTop:3 }}>⏳ Loading...</div>}
             {videos[ch.id] && (
               <div style={{ marginTop:6, display:"flex", gap:6, flexWrap:"wrap" }}>
-                <Badge color={C.blue}>{videos[ch.id].total_videos} vids</Badge>
+                <Badge color={C.blue}>{videos[ch.id].fetched_count ?? videos[ch.id].total_videos} vids</Badge>
                 {!videos[ch.id].hidden_subs && (
                   <Badge color={C.green}>{Number(videos[ch.id].subscribers||0).toLocaleString()} subs</Badge>
                 )}
@@ -1945,7 +2207,8 @@ function VideoManagerTab({ channels, C, user, toast }) {
                 <div style={{ fontWeight:900, fontSize:18, color:C.text }}>{selCh.name}</div>
                 {chData && (
                   <div style={{ fontSize:12, color:C.muted, marginTop:2, display:"flex", gap:14 }}>
-                    <span>🎬 {chData.total_videos} videos</span>
+                    <span>🎬 {chData.fetched_count ?? chData.total_videos} videos</span>
+                    <span style={{ fontSize:10, color:C.muted }}>({chData.total_videos} public)</span>
                     <span>👁 {Number(chData.total_views||0).toLocaleString()} views</span>
                     <span>👥 {chData.hidden_subs ? "Subs hidden" : Number(chData.subscribers||0).toLocaleString()+" subs"}</span>
                   </div>
@@ -2107,6 +2370,195 @@ function VideoManagerTab({ channels, C, user, toast }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Auto Content Tab — trending discovery → Claude script → film → upload ──
+const IDEA_STATUS_COLOR = { pending:"#f59e0b", approved:"#3b82f6", rejected:"#64748b",
+  scripted:"#8b5cf6", filmed:"#06b6d4", ready:"#22c55e" };
+
+function AutoContentTab({ channels, C, user, toast }) {
+  const [selChId, setSelChId] = useState(channels[0]?.id || "");
+  const [videoType, setVideoType] = useState("long"); // short | long
+  const [ideas, setIdeas] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [scripting, setScripting] = useState({});
+  const [openScript, setOpenScript] = useState({});
+
+  const canEdit = user.role === "admin" || user.role === "manager";
+
+  const loadIdeas = async (chId) => {
+    if (!chId) return;
+    try {
+      const { data } = await api.get(`/trends/${chId}/ideas`);
+      setIdeas(data || []);
+    } catch (e) {
+      toast(e.response?.data?.error || "Ideas load nahi hui", "error");
+    }
+  };
+
+  useEffect(() => { loadIdeas(selChId); }, [selChId]);
+
+  const fetchTrending = async () => {
+    if (!selChId) return;
+    setLoading(true);
+    try {
+      const { data } = await api.get(`/trends/${selChId}`, { params: { type: videoType } });
+      setIdeas(data.ideas || []);
+      toast(`✅ Trending ideas refresh ho gaye (${videoType})`);
+    } catch (e) {
+      toast(e.response?.data?.error || "Trending fetch nahi hui — OAuth check karo", "error");
+    }
+    setLoading(false);
+  };
+
+  const updateStatus = async (id, status) => {
+    try {
+      const { data } = await api.patch(`/trends/idea/${id}`, { status });
+      setIdeas(p => p.map(i => i.id === id ? data : i));
+    } catch (e) {
+      toast(e.response?.data?.error || "Update nahi hua", "error");
+    }
+  };
+
+  const generateScript = async (id) => {
+    setScripting(p => ({...p, [id]: true}));
+    try {
+      const { data } = await api.post(`/trends/idea/${id}/script`);
+      setIdeas(p => p.map(i => i.id === id ? data : i));
+      setOpenScript(p => ({...p, [id]: true}));
+      toast("✅ Script ready ho gaya!");
+    } catch (e) {
+      toast(e.response?.data?.error || "Script generate nahi hua", "error");
+    }
+    setScripting(p => ({...p, [id]: false}));
+  };
+
+  const deleteIdea = async (id) => {
+    if (!confirm("Ye idea delete karu?")) return;
+    try {
+      await api.delete(`/trends/idea/${id}`);
+      setIdeas(p => p.filter(i => i.id !== id));
+    } catch (e) {
+      toast(e.response?.data?.error || "Delete nahi hua", "error");
+    }
+  };
+
+  const selCh = channels.find(c => c.id === selChId);
+
+  return (
+    <div style={{ display:"grid", gridTemplateColumns:"220px 1fr", gap:16, minHeight:"70vh" }}>
+      {/* Channel sidebar */}
+      <div>
+        <div style={{ fontWeight:700, fontSize:13, color:C.muted, marginBottom:10,
+          textTransform:"uppercase", letterSpacing:0.5 }}>Channels</div>
+        {channels.map(ch => (
+          <div key={ch.id} onClick={() => setSelChId(ch.id)} style={{
+            padding:"12px 14px", marginBottom:8, borderRadius:10, cursor:"pointer",
+            background: selChId===ch.id ? `${C.blue}18` : C.surface,
+            border: `1px solid ${selChId===ch.id ? C.blue+"60" : C.border}` }}>
+            <div style={{ fontWeight:700, fontSize:13, color:C.text }}>{ch.name}</div>
+            <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{ch.niche||"No niche"}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Main panel */}
+      <div>
+        {!selCh ? (
+          <Card style={{ textAlign:"center", padding:60, color:C.muted }}>Left se channel select karo</Card>
+        ) : (
+          <>
+            <SectionHead action={
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <Btn small color={videoType==="long"?C.blue:C.border2} outline={videoType!=="long"}
+                  onClick={() => setVideoType("long")}>🎬 Long</Btn>
+                <Btn small color={videoType==="short"?C.blue:C.border2} outline={videoType!=="short"}
+                  onClick={() => setVideoType("short")}>⚡ Short</Btn>
+                {canEdit && (
+                  <Btn small color={C.purple} disabled={loading} onClick={fetchTrending}>
+                    {loading ? "⏳ Fetching..." : "🔍 Fetch Trending"}
+                  </Btn>
+                )}
+              </div>
+            }>🎯 Auto Content — {selCh.name}</SectionHead>
+
+            <div style={{ fontSize:12, color:C.muted, marginBottom:16, padding:"10px 12px",
+              background:`${C.purple}10`, borderRadius:8, border:`1px solid ${C.purple}20` }}>
+              💡 Pipeline: Trending fetch karo → idea approve karo → Claude se script banwao →
+              us script se video shoot/edit karo → "Filmed" mark karke Bulk Schedule tab se
+              Drive link ke saath upload karo.
+            </div>
+
+            {ideas.length === 0 ? (
+              <Card style={{ textAlign:"center", padding:40, color:C.muted }}>
+                <div style={{ fontSize:32, marginBottom:8 }}>🎯</div>
+                Koi idea nahi hai — "🔍 Fetch Trending" dabao
+              </Card>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {ideas.map(idea => (
+                  <Card key={idea.id} style={{ padding:16 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap" }}>
+                      <div style={{ flex:1, minWidth:200 }}>
+                        <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:6, flexWrap:"wrap" }}>
+                          <Badge color={IDEA_STATUS_COLOR[idea.status]}>{idea.status}</Badge>
+                          <Badge color={C.cyan}>{idea.video_type}</Badge>
+                        </div>
+                        <div style={{ fontWeight:700, fontSize:14, color:C.text }}>{idea.title_idea}</div>
+                        <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>
+                          Trending inspiration: "{idea.source_title}" — {idea.source_channel}
+                        </div>
+                      </div>
+                      {canEdit && (
+                        <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"flex-start" }}>
+                          {idea.status === "pending" && (<>
+                            <Btn small color={C.green} onClick={() => updateStatus(idea.id, "approved")}>✅ Approve</Btn>
+                            <Btn small outline color={C.red} onClick={() => updateStatus(idea.id, "rejected")}>✕ Reject</Btn>
+                          </>)}
+                          {idea.status === "approved" && (
+                            <Btn small color={C.purple} disabled={scripting[idea.id]} onClick={() => generateScript(idea.id)}>
+                              {scripting[idea.id] ? "⏳ Writing..." : "✨ Generate Script"}
+                            </Btn>
+                          )}
+                          {idea.status === "scripted" && (<>
+                            <Btn small outline color={C.cyan} onClick={() => setOpenScript(p => ({...p, [idea.id]: !p[idea.id]}))}>
+                              📜 {openScript[idea.id] ? "Hide" : "View"} Script
+                            </Btn>
+                            <Btn small color={C.cyan} onClick={() => updateStatus(idea.id, "filmed")}>🎬 Mark Filmed</Btn>
+                          </>)}
+                          {idea.status === "filmed" && (
+                            <Btn small color={C.green} onClick={() => updateStatus(idea.id, "ready")}>✅ Mark Ready</Btn>
+                          )}
+                          {idea.status === "ready" && (
+                            <Badge color={C.green}>Ready — Bulk Schedule mein Drive link daalo</Badge>
+                          )}
+                          <button onClick={() => deleteIdea(idea.id)}
+                            style={{ padding:"5px 10px", background:`${C.red}18`, border:`1px solid ${C.red}40`,
+                              borderRadius:7, color:C.red, fontSize:11, cursor:"pointer" }}>🗑</button>
+                        </div>
+                      )}
+                    </div>
+                    {idea.script && openScript[idea.id] && (
+                      <div style={{ marginTop:12, borderTop:`1px solid ${C.border}`, paddingTop:12 }}>
+                        <textarea readOnly value={idea.script}
+                          style={{ width:"100%", minHeight:180, background:C.surface, border:`1px solid ${C.border2}`,
+                            borderRadius:8, color:C.text, padding:"10px 12px", fontSize:12, lineHeight:1.6,
+                            fontFamily:"inherit", resize:"vertical", boxSizing:"border-box", outline:"none" }} />
+                        <Btn small outline color={C.cyan} style={{ marginTop:8 }}
+                          onClick={() => { navigator.clipboard.writeText(idea.script); toast("📋 Script copy ho gaya"); }}>
+                          📋 Copy Script
+                        </Btn>
+                      </div>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

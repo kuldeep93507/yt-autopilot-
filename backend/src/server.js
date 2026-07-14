@@ -18,10 +18,14 @@ import driveRoutes   from "./routes/drive.js";
 import uploadRoutes  from "./routes/upload.js";
 import teamRoutes    from "./routes/team.js";
 import analyticsRoutes from "./routes/analytics.js";
+import trendsRoutes  from "./routes/trends.js";
 
 import { startDriveWatcher } from "./services/drive.service.js";
 import { setupWorker }       from "./workers/upload.worker.js";
 import { requireAuth, requireRole } from "./middleware/auth.js";
+import { apiLimiter }        from "./middleware/rateLimit.js";
+import { alertServerCrash }  from "./services/notify.service.js";
+import supabase from "./db/supabase.js";
 
 const app    = express();
 const server = createServer(app);
@@ -54,6 +58,7 @@ app.use(helmet());
 app.use(cors(corsOpts));
 app.use(express.json());
 app.use(morgan("dev"));
+app.use("/api", apiLimiter);
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use("/api/auth",      authRoutes);
@@ -64,8 +69,17 @@ app.use("/api/drive",     driveRoutes);
 app.use("/api/upload",    uploadRoutes);
 app.use("/api/team",      teamRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/trends",    trendsRoutes);
 
-app.get("/api/health", (_req, res) => res.json({ status: "ok", time: new Date() }));
+app.get("/api/health", async (_req, res) => {
+  const checks = { server: "ok", db: "unknown" };
+  try {
+    const { error } = await supabase.from("channels").select("id").limit(1);
+    checks.db = error ? "error" : "ok";
+  } catch { checks.db = "error"; }
+  const healthy = checks.db === "ok";
+  res.status(healthy ? 200 : 503).json({ status: healthy ? "ok" : "degraded", checks, time: new Date() });
+});
 
 // POST /api/settings/keys — update AI keys at runtime (admin only)
 app.post("/api/settings/keys", requireAuth, requireRole("admin"), (req, res) => {
@@ -89,8 +103,14 @@ app.use((err, _req, res, _next) => {
 });
 
 // ── Crash protection — prevent unhandled errors from killing the process ────
-process.on("uncaughtException",      (err) => console.error("💥 UncaughtException:", err));
-process.on("unhandledRejection",     (err) => console.error("💥 UnhandledRejection:", err));
+process.on("uncaughtException", (err) => {
+  console.error("💥 UncaughtException:", err);
+  alertServerCrash("UncaughtException", err);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("💥 UnhandledRejection:", err);
+  alertServerCrash("UnhandledRejection", err);
+});
 
 // ── Start ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;

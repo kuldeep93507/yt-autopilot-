@@ -5,6 +5,8 @@ import multer from "multer";
 import { Readable } from "stream";
 import supabase from "../db/supabase.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireChannelAccess } from "../middleware/channelAccess.js";
+import { getQuotaStatus } from "../services/quota.service.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -23,8 +25,18 @@ function buildOAuth(ch) {
 
 // ── GET /api/channels ───────────────────────────────────────────────────────
 router.get("/", async (req, res) => {
-  const { data, error } = await supabase
-    .from("channels").select("*").order("created_at", { ascending: true });
+  let query = supabase.from("channels").select("*").order("created_at", { ascending: true });
+
+  // editor/uploader only see channels explicitly assigned to them
+  if (!["admin", "manager"].includes(req.user.role)) {
+    const { data: access } = await supabase
+      .from("team_channel_access").select("channel_id").eq("user_id", req.user.id);
+    const allowedIds = (access || []).map(a => a.channel_id);
+    if (!allowedIds.length) return res.json([]);
+    query = query.in("id", allowedIds);
+  }
+
+  const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   if (req.user.role !== "admin") {
     data.forEach((c) => {
@@ -90,11 +102,19 @@ router.get("/lookup", async (req, res) => {
   }
 });
 
-// ── GET /api/channels/:id/videos — full stats + video list ─────────────────
-router.get("/:id/videos", async (req, res) => {
+// ── GET /api/channels/:id/quota — today's YouTube API quota usage ──────────
+router.get("/:id/quota", requireChannelAccess("id"), async (req, res) => {
+  const status = await getQuotaStatus(req.params.id);
+  res.json(status);
+});
+
+// ── GET /api/channels/:id/videos — full stats + ALL videos (paginated) ─────
+router.get("/:id/videos", requireChannelAccess("id"), async (req, res) => {
   const { data: ch } = await supabase.from("channels").select("*").eq("id", req.params.id).single();
   if (!ch) return res.status(404).json({ error: "Channel not found" });
   if (!ch.refresh_token) return res.status(400).json({ error: "Channel has no OAuth token" });
+
+  const maxFetch = parseInt(req.query.max || "500"); // default fetch up to 500 videos
 
   try {
     const yt = createYoutube({ version: "v3", auth: buildOAuth(ch) });
@@ -107,51 +127,72 @@ router.get("/:id/videos", async (req, res) => {
     const stats    = item?.statistics || {};
     const playlist = item?.contentDetails?.relatedPlaylists?.uploads;
 
-    let videos = [];
-    if (playlist) {
-      const plRes = await yt.playlistItems.list({
-        part: ["snippet","contentDetails"],
-        playlistId: playlist,
-        maxResults: 50,
-      });
-      const videoIds = (plRes.data.items || []).map(v => v.snippet.resourceId.videoId);
+    let allItems = [];
 
-      // Fetch duration + view count per video
-      let videoDetails = {};
-      if (videoIds.length) {
+    if (playlist) {
+      // ── Paginate through ALL videos ──
+      let pageToken = undefined;
+      do {
+        const plRes = await yt.playlistItems.list({
+          part:      ["snippet","contentDetails"],
+          playlistId: playlist,
+          maxResults: 50,
+          pageToken,
+        });
+        allItems.push(...(plRes.data.items || []));
+        pageToken = plRes.data.nextPageToken;
+      } while (pageToken && allItems.length < maxFetch);
+
+      // ── Fetch video details in batches of 50 ──
+      const allIds = allItems.map(v => v.snippet.resourceId.videoId);
+      const videoDetails = {};
+
+      for (let i = 0; i < allIds.length; i += 50) {
+        const batch = allIds.slice(i, i + 50);
         const detRes = await yt.videos.list({
           part: ["statistics","contentDetails","status"],
-          id: videoIds,
+          id:   batch,
         });
         detRes.data.items?.forEach(v => { videoDetails[v.id] = v; });
       }
 
-      videos = (plRes.data.items || []).map((v) => {
+      // ── Build final video list ──
+      const videos = allItems.map((v) => {
         const vid = v.snippet.resourceId.videoId;
         const det = videoDetails[vid] || {};
-        const dur = det.contentDetails?.duration || "";
         return {
-          id:           vid,
-          title:        v.snippet.title,
-          description:  v.snippet.description,
-          thumbnail:    v.snippet.thumbnails?.medium?.url,
-          published:    v.snippet.publishedAt,
-          views:        parseInt(det.statistics?.viewCount  || 0),
-          likes:        parseInt(det.statistics?.likeCount  || 0),
-          comments:     parseInt(det.statistics?.commentCount || 0),
-          privacy:      det.status?.privacyStatus || "public",
-          duration:     dur,
+          id:          vid,
+          title:       v.snippet.title,
+          description: v.snippet.description,
+          thumbnail:   v.snippet.thumbnails?.medium?.url,
+          published:   v.snippet.publishedAt,
+          views:       parseInt(det.statistics?.viewCount    || 0),
+          likes:       parseInt(det.statistics?.likeCount    || 0),
+          comments:    parseInt(det.statistics?.commentCount || 0),
+          privacy:     det.status?.privacyStatus || "public",
+          duration:    det.contentDetails?.duration || "",
         };
+      });
+
+      return res.json({
+        total_videos:  parseInt(stats.videoCount      || 0),
+        total_views:   parseInt(stats.viewCount       || 0),
+        subscribers:   parseInt(stats.subscriberCount || 0),
+        hidden_subs:   stats.hiddenSubscriberCount    || false,
+        channel_name:  item?.snippet?.title           || ch.name,
+        fetched_count: videos.length,
+        recent_videos: videos,
       });
     }
 
     res.json({
-      total_videos:   parseInt(stats.videoCount    || 0),
-      total_views:    parseInt(stats.viewCount     || 0),
-      subscribers:    parseInt(stats.subscriberCount || 0),
-      hidden_subs:    stats.hiddenSubscriberCount  || false,
-      channel_name:   item?.snippet?.title         || ch.name,
-      recent_videos:  videos,
+      total_videos:  parseInt(stats.videoCount      || 0),
+      total_views:   parseInt(stats.viewCount       || 0),
+      subscribers:   parseInt(stats.subscriberCount || 0),
+      hidden_subs:   stats.hiddenSubscriberCount    || false,
+      channel_name:  item?.snippet?.title           || ch.name,
+      fetched_count: 0,
+      recent_videos: [],
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

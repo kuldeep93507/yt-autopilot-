@@ -3,11 +3,12 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import supabase from "../db/supabase.js";
 import { requireAuth } from "../middleware/auth.js";
+import { loginLimiter } from "../middleware/rateLimit.js";
 
 const router = Router();
 
 // POST /api/auth/login
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: "Email and password required" });

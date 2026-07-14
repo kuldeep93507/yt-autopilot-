@@ -2,6 +2,7 @@ import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import supabase from "../db/supabase.js";
 import { uploadToYouTube } from "../services/youtube.service.js";
+import { alertUploadFailed } from "../services/notify.service.js";
 import { io } from "../server.js";
 
 let connection, uploadQueue;
@@ -72,8 +73,14 @@ export async function setupWorker() {
     { connection, concurrency: 2 }
   );
 
-  worker.on("failed", (job, err) => {
+  worker.on("failed", async (job, err) => {
     console.error(`❌ Job failed (${job?.data?.title}):`, err.message);
+    // Only alert once all retries are exhausted — avoid spamming per-attempt
+    if (job && job.attemptsMade >= (job.opts.attempts || 1)) {
+      const { data: ch } = await supabase
+        .from("channels").select("name").eq("id", job.data.channel_id).single();
+      await alertUploadFailed(job.data.title, ch?.name || "Unknown", err.message);
+    }
   });
 
   console.log("⚙️  Upload worker started (concurrency: 2)");
