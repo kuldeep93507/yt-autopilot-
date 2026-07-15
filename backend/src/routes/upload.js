@@ -2,7 +2,9 @@ import { Router } from "express";
 import multer from "multer";
 import { youtube as createYoutube } from "@googleapis/youtube";
 import { OAuth2Client } from "google-auth-library";
-import { Readable } from "stream";
+import { createReadStream } from "fs";
+import { unlink } from "fs/promises";
+import { tmpdir } from "os";
 import supabase from "../db/supabase.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { requireChannelAccess } from "../middleware/channelAccess.js";
@@ -14,13 +16,13 @@ import { io } from "../server.js";
 const router = Router();
 router.use(requireAuth);
 
-// Multer — memory storage (PC + phone se direct upload).
-// 200MB cap: the whole file sits in RAM and Render free tier has 512MB total,
-// so a bigger buffer OOM-kills the server mid-upload. Bade files ke liye
-// Drive-link path use karo (wo stream karta hai, RAM mein nahi rakhta).
+// Multer — disk storage (PC + phone se direct upload).
+// File RAM mein nahi, temp disk pe stream hoti hai, wahan se YouTube pe
+// stream hoti hai, phir delete — isliye multi-GB videos bhi safe hain.
+// 128GB cap is YouTube's own max upload size.
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 200 * 1024 * 1024 },
+  storage: multer.diskStorage({ destination: tmpdir() }),
+  limits: { fileSize: 128 * 1024 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith("video/")) cb(null, true);
     else cb(new Error("Only video files allowed"));
@@ -35,13 +37,15 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
   requireChannelAccess("channel_id"),
   async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No video file uploaded" });
+    const tempPath = req.file.path;
+    const cleanup = () => unlink(tempPath).catch(() => {});
 
     const { channel_id, title, description, tags, privacy, sched_date, sched_time } = req.body;
-    if (!channel_id || !title) return res.status(400).json({ error: "channel_id and title required" });
+    if (!channel_id || !title) { cleanup(); return res.status(400).json({ error: "channel_id and title required" }); }
 
     const { data: ch } = await supabase.from("channels").select("*").eq("id", channel_id).single();
-    if (!ch) return res.status(404).json({ error: "Channel not found" });
-    if (!ch.refresh_token) return res.status(400).json({ error: "Channel has no OAuth token" });
+    if (!ch) { cleanup(); return res.status(404).json({ error: "Channel not found" }); }
+    if (!ch.refresh_token) { cleanup(); return res.status(400).json({ error: "Channel has no OAuth token" }); }
 
     // Same pre-upload safety screen as the Drive-link path — direct uploads
     // shouldn't be a backdoor around the copyright/policy agent.
@@ -50,6 +54,7 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
       title, description, tags,
     });
     if (safety.risk_level === "block") {
+      cleanup();
       return res.status(422).json({ error: `Safety check blocked this upload: ${safety.reasons}`, safety });
     }
 
@@ -100,7 +105,7 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
           },
           media: {
             mimeType: req.file.mimetype,
-            body: Readable.from(req.file.buffer),
+            body: createReadStream(tempPath),
           },
         });
 
@@ -117,6 +122,8 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
           status: "error", error_msg: err.message,
         }).eq("id", qItem?.id);
         io.emit("queue:upload_error", { id: qItem?.id, error: err.message });
+      } finally {
+        cleanup();
       }
     });
   }
