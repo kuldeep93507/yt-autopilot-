@@ -281,26 +281,56 @@ router.get("/:channelId", async (req, res) => {
       }
       analyticsData = aRes.data;
 
-      // Per-video metrics (top 10) — same revenue fallback
+      // Per-video metrics. The Analytics API only returns rows for videos that
+      // recorded activity in the period, so a freshly uploaded video has no row
+      // and used to vanish from the list entirely. We therefore query analytics
+      // (top performers + explicitly the newest uploads) and then merge onto the
+      // FULL video list, so every video shows — new ones simply read zero.
       if (videoList.length) {
-        const top10ids = videoList.slice(0, 10).map(v => v.id).join(",");
         const VID_CORE = "views,estimatedMinutesWatched,averageViewDuration,likes,comments,shares";
-        const vidParams = (metrics) => ({
-          ids: "channel==MINE", startDate, endDate, metrics,
-          dimensions: "video", filters: `video==${top10ids}`, sort: "-views", maxResults: 10,
-        });
-        let vRes;
-        try   { vRes = await yta.reports.query(vidParams(`${VID_CORE},estimatedRevenue`)); }
-        catch { vRes = await yta.reports.query(vidParams(VID_CORE)); }
-        const hdrs = vRes.data.columnHeaders?.map(h => h.name) || [];
-        videoAnalytics = (vRes.data.rows || []).map(row => {
-          const obj = {};
-          hdrs.forEach((h, i) => { obj[h] = row[i]; });
-          const meta = videoList.find(v => v.id === obj.video);
-          obj.title     = meta?.title     || obj.video;
-          obj.thumbnail = meta?.thumbnail || null;
-          obj.published = meta?.published || null;
-          return obj;
+        const runVid = async (extra) => {
+          const params = (metrics) => ({
+            ids: "channel==MINE", startDate, endDate, metrics,
+            dimensions: "video", sort: "-views", maxResults: 25, ...extra,
+          });
+          let r;
+          try   { r = await yta.reports.query(params(`${VID_CORE},estimatedRevenue`)); }
+          catch { r = await yta.reports.query(params(VID_CORE)); }
+          const hdrs = r.data.columnHeaders?.map(h => h.name) || [];
+          return (r.data.rows || []).map(row => {
+            const o = {};
+            hdrs.forEach((h, i) => { o[h] = row[i]; });
+            return o;
+          });
+        };
+
+        const newestIds = videoList.slice(0, 15).map(v => v.id);
+        const [topRows, newRows] = await Promise.all([
+          runVid({}).catch(() => []),
+          newestIds.length ? runVid({ filters: `video==${newestIds.join(",")}` }).catch(() => []) : [],
+        ]);
+
+        const statsById = {};
+        [...topRows, ...newRows].forEach(r => { if (r.video) statsById[r.video] = r; });
+
+        videoAnalytics = videoList.map(v => {
+          const s = statsById[v.id];
+          return {
+            video:       v.id,
+            title:       v.title,
+            thumbnail:   v.thumbnail,
+            published:   v.published,
+            privacy:     v.privacy,
+            lifetimeViews: v.views,
+            hasAnalytics:  !!s,
+            views:                   Number(s?.views || 0),
+            estimatedMinutesWatched: Number(s?.estimatedMinutesWatched || 0),
+            averageViewDuration:     Number(s?.averageViewDuration || 0),
+            likes:                   Number(s?.likes || 0),
+            comments:                Number(s?.comments || 0),
+            shares:                  Number(s?.shares || 0),
+            estimatedRevenue: s?.estimatedRevenue != null ? Number(s.estimatedRevenue) : null,
+          };
         });
       }
     } catch (aErr) {

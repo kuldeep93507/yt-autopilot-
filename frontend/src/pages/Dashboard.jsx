@@ -1654,6 +1654,7 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
   const [days,     setDays]     = useState(28);
   const [vidDetail, setVidDetail] = useState(null);   // deep-dive data
   const [vidLoading, setVidLoading] = useState(false);
+  const [vidSort,   setVidSort]   = useState("newest"); // newest | views
 
   const fmtNum   = (n) => Number(n||0).toLocaleString("en-IN");
   const fmtHrs   = (m) => { const h=Math.floor((m||0)/60); const mn=Math.round((m||0)%60); return h>0?`${h}h ${mn}m`:`${mn}m`; };
@@ -1928,25 +1929,51 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                 </div>
               ) : null}
 
-              {/* Per-video analytics (from Analytics API) */}
-              {videoAnalytics.length > 0 && (
+              {/* All videos with analytics merged in */}
+              {videoAnalytics.length > 0 && (() => {
+                const sorted = [...videoAnalytics].sort((a, b) =>
+                  vidSort === "newest"
+                    ? String(b.published || "").localeCompare(String(a.published || ""))
+                    : Number(b.views || 0) - Number(a.views || 0)
+                );
+                const isFresh = (p) => p && (Date.now() - new Date(p).getTime()) < 48 * 3600 * 1000;
+                return (
                 <div style={{ marginBottom:18 }}>
-                  <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>🎬 Top Videos — Analytics (Last {days} days) <span style={{fontSize:11, color:C.muted, fontWeight:500}}>— kisi bhi video pe click karo full breakdown ke liye</span></div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                    {videoAnalytics.map((v, i) => (
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, flexWrap:"wrap", gap:8 }}>
+                    <div style={{ fontWeight:700, fontSize:14, color:C.text }}>
+                      🎬 Saari Videos ({sorted.length}) — Last {days} days
+                      <span style={{fontSize:11, color:C.muted, fontWeight:500}}> — kisi bhi video pe click karo full breakdown ke liye</span>
+                    </div>
+                    <div style={{ display:"flex", gap:6 }}>
+                      {[["newest","🆕 Nayi pehle"],["views","🔥 Zyada views"]].map(([k,l]) => (
+                        <button key={k} onClick={() => setVidSort(k)} style={{
+                          padding:"4px 10px", borderRadius:6, fontSize:11, fontWeight:700, cursor:"pointer",
+                          background: vidSort===k ? C.blue : C.surface,
+                          border:`1px solid ${vidSort===k ? C.blue : C.border}`,
+                          color: vidSort===k ? "#fff" : C.muted,
+                        }}>{l}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:8, maxHeight:600, overflowY:"auto" }}>
+                    {sorted.map((v, i) => (
                       <div key={v.video||i} onClick={() => openVideoDetail(v.video)}
                         style={{ background:C.card, borderRadius:10, padding:"12px 16px", cursor:"pointer",
-                        border:`1px solid ${C.border}`, display:"flex", alignItems:"center", gap:12 }}>
+                        border:`1px solid ${isFresh(v.published) ? C.green+"50" : C.border}`, display:"flex", alignItems:"center", gap:12 }}>
                         {v.thumbnail && (
                           <img src={v.thumbnail} alt="" style={{ width:80, height:45, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
                         )}
                         <div style={{ flex:1, minWidth:0 }}>
-                          <a href={`https://youtu.be/${v.video}`} target="_blank" rel="noreferrer"
-                            onClick={e => e.stopPropagation()}
-                            style={{ fontWeight:700, fontSize:13, color:C.text, textDecoration:"none",
-                              display:"block", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                            {v.title}
-                          </a>
+                          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                            {isFresh(v.published) && <Badge color={C.green}>🆕 NAYI</Badge>}
+                            {v.privacy && v.privacy !== "public" && <Badge color={C.yellow}>{v.privacy}</Badge>}
+                            <a href={`https://youtu.be/${v.video}`} target="_blank" rel="noreferrer"
+                              onClick={e => e.stopPropagation()}
+                              style={{ fontWeight:700, fontSize:13, color:C.text, textDecoration:"none",
+                                overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 }}>
+                              {v.title}
+                            </a>
+                          </div>
                           <div style={{ display:"flex", gap:14, marginTop:5, flexWrap:"wrap" }}>
                             <span style={{ fontSize:11, color:C.blue }}>👁 {fmtNum(v.views)} views</span>
                             <span style={{ fontSize:11, color:C.cyan }}>⏱ {fmtHrs(v.estimatedMinutesWatched)} watched</span>
@@ -1955,17 +1982,27 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                             {v.estimatedRevenue != null && (
                               <span style={{ fontSize:11, color:C.yellow }}>💰 {fmtMoney(v.estimatedRevenue)}</span>
                             )}
+                            <span style={{ fontSize:11, color:C.muted }}>
+                              📅 {v.published ? new Date(v.published).toLocaleDateString("en-IN", {day:"2-digit",month:"short"}) : ""}
+                            </span>
                           </div>
+                          {!v.hasAnalytics && (
+                            <div style={{ fontSize:10, color:C.yellow, marginTop:4 }}>
+                              ⏳ Analytics data abhi nahi aaya — YouTube ko 24-48 ghante lagte hain
+                              {v.lifetimeViews > 0 && ` (lifetime: ${fmtNum(v.lifetimeViews)} views)`}
+                            </div>
+                          )}
                         </div>
                         <div style={{ textAlign:"right", flexShrink:0 }}>
-                          <div style={{ fontSize:16, fontWeight:900, color:C.blue }}>{fmtNum(v.views)}</div>
+                          <div style={{ fontSize:16, fontWeight:900, color: v.views > 0 ? C.blue : C.muted }}>{fmtNum(v.views)}</div>
                           <div style={{ fontSize:10, color:C.muted }}>views</div>
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* Basic video list (from Data API — always available) */}
               {videoAnalytics.length === 0 && videos.length > 0 && (
