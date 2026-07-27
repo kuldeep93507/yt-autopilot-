@@ -172,7 +172,9 @@ router.get("/:channelId", async (req, res) => {
       // invalid_grant = token expired/revoked
       const msg = oauthErr.message || "";
       if (msg.includes("invalid_grant") || msg.includes("Token has been expired")) {
-        return res.status(401).json({
+        // 409, not 401: 401 means "your app session is invalid" and the client
+        // logs the user out on it. This is a YouTube-side token problem.
+        return res.status(409).json({
           error: "token_expired",
           message: "Refresh token expire ho gaya hai — OAuth Playground se naya token generate karo aur Channels tab mein update karo",
           channel_name: ch.name,
