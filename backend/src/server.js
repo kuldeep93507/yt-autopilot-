@@ -32,12 +32,18 @@ const app    = express();
 const server = createServer(app);
 
 // ── CORS origins ───────────────────────────────────────────────────────────
+// The dashboard is now served from this same service, so our own public URL
+// must be allowed: <script type="module"> is fetched in CORS mode and sends
+// an Origin header even same-origin — without this the bundle never loads.
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
   "http://localhost:5175",
   "http://localhost:4173",
+  "http://localhost:4000",
+  "https://yt-autopilot-cja7.onrender.com",
   "https://yt-autopilot-indol.vercel.app",
+  ...(process.env.RENDER_EXTERNAL_URL ? [process.env.RENDER_EXTERNAL_URL] : []),
   ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
 ];
 const corsOpts = {
