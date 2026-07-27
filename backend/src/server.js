@@ -57,7 +57,9 @@ io.on("connection", (socket) => {
 });
 
 // ── Middleware ─────────────────────────────────────────────────────────────
-app.use(helmet());
+// CSP off: dashboard loads YouTube thumbnails (i.ytimg.com/yt3.ggpht.com)
+// which helmet's default img-src 'self' would block on the self-hosted UI.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors(corsOpts));
 app.use(express.json());
 app.use(morgan("dev"));
@@ -98,6 +100,16 @@ app.post("/api/settings/keys", requireAuth, requireRole("admin"), (req, res) => 
     writeFileSync(envPath, env);
   } catch { /* .env write fail — runtime still updated */ }
   res.json({ success: true });
+});
+
+// ── Self-hosted frontend — backend/public (built React app) ────────────────
+// Serves the dashboard from this same service so no separate host is needed.
+const publicDir = join(dirname(fileURLToPath(import.meta.url)), "../public");
+app.use(express.static(publicDir));
+// SPA fallback: any non-API GET → index.html (client-side routing/refresh)
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api") || req.path.startsWith("/socket.io")) return next();
+  res.sendFile(join(publicDir, "index.html"), (err) => { if (err) next(); });
 });
 
 // ── Error handler ──────────────────────────────────────────────────────────
