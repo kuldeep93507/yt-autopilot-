@@ -1540,6 +1540,112 @@ function BreakdownList({ title, icon, rows, labelKey, C, fmtNum, labelMap }) {
   );
 }
 
+// Day-by-day table — kis din kitne views/watch/earning (YT Studio style)
+function DailyTable({ rows, C, fmtNum, fmtHrs, fmtMoney, title = "📅 Din-ba-din Report" }) {
+  const [open, setOpen] = useState(true);
+  if (!rows?.length) return null;
+  const hasRev  = rows.some(r => r.estimatedRevenue != null);
+  const hasSubs = rows.some(r => r.subscribersGained != null);
+  // newest day first — that's what you check most
+  const sorted = [...rows].sort((a, b) => String(b.day).localeCompare(String(a.day)));
+  const tot = sorted.reduce((a, r) => ({
+    views: a.views + Number(r.views || 0),
+    mins:  a.mins  + Number(r.estimatedMinutesWatched || 0),
+    rev:   a.rev   + Number(r.estimatedRevenue || 0),
+    subs:  a.subs  + Number(r.subscribersGained || 0),
+  }), { views:0, mins:0, rev:0, subs:0 });
+
+  const th = { textAlign:"right", padding:"8px 10px", fontSize:11, color:C.muted, fontWeight:700,
+    textTransform:"uppercase", letterSpacing:0.3, borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" };
+  const td = { textAlign:"right", padding:"7px 10px", fontSize:12, color:C.text, whiteSpace:"nowrap" };
+
+  return (
+    <div style={{ background:C.card, borderRadius:12, border:`1px solid ${C.border}`, marginBottom:18, overflow:"hidden" }}>
+      <div onClick={() => setOpen(o => !o)} style={{ display:"flex", justifyContent:"space-between",
+        alignItems:"center", padding:"14px 18px", cursor:"pointer" }}>
+        <div style={{ fontWeight:700, fontSize:14, color:C.text }}>{title} <span style={{fontSize:11, color:C.muted, fontWeight:500}}>({sorted.length} din)</span></div>
+        <span style={{ color:C.muted, fontSize:12 }}>{open ? "▲ chhupao" : "▼ dikhao"}</span>
+      </div>
+      {open && (
+        <div style={{ overflowX:"auto", maxHeight:420, overflowY:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse" }}>
+            <thead style={{ position:"sticky", top:0, background:C.card, zIndex:1 }}>
+              <tr>
+                <th style={{ ...th, textAlign:"left" }}>Date</th>
+                <th style={th}>Views</th>
+                <th style={th}>Watch Time</th>
+                {hasSubs && <th style={th}>Subs</th>}
+                <th style={th}>Likes</th>
+                {hasRev && <th style={th}>Earning</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r, i) => (
+                <tr key={r.day || i} style={{ borderBottom:`1px solid ${C.border}55` }}>
+                  <td style={{ ...td, textAlign:"left", color:C.dim }}>
+                    {r.day ? new Date(r.day + "T00:00:00").toLocaleDateString("en-IN", {day:"2-digit", month:"short", weekday:"short"}) : "—"}
+                  </td>
+                  <td style={{ ...td, fontWeight:700, color: Number(r.views||0) > 0 ? C.blue : C.muted }}>{fmtNum(r.views)}</td>
+                  <td style={td}>{fmtHrs(r.estimatedMinutesWatched)}</td>
+                  {hasSubs && <td style={{ ...td, color: Number(r.subscribersGained||0) > 0 ? C.green : C.muted }}>
+                    {Number(r.subscribersGained||0) > 0 ? "+" : ""}{fmtNum(r.subscribersGained)}
+                  </td>}
+                  <td style={td}>{fmtNum(r.likes)}</td>
+                  {hasRev && <td style={{ ...td, color: Number(r.estimatedRevenue||0) > 0 ? C.yellow : C.muted, fontWeight:700 }}>
+                    {fmtMoney(r.estimatedRevenue)}
+                  </td>}
+                </tr>
+              ))}
+              <tr style={{ background:C.surface, fontWeight:900 }}>
+                <td style={{ ...td, textAlign:"left", color:C.text, fontWeight:900 }}>TOTAL</td>
+                <td style={{ ...td, color:C.blue, fontWeight:900 }}>{fmtNum(tot.views)}</td>
+                <td style={{ ...td, fontWeight:900 }}>{fmtHrs(tot.mins)}</td>
+                {hasSubs && <td style={{ ...td, color:C.green, fontWeight:900 }}>+{fmtNum(tot.subs)}</td>}
+                <td style={td}></td>
+                {hasRev && <td style={{ ...td, color:C.yellow, fontWeight:900 }}>{fmtMoney(tot.rev)}</td>}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Health panel — video pe koi dikkat to nahi (block, restriction, processing error)
+function VideoIssues({ issues, C }) {
+  const style = {
+    error: { bg:`${C.red}12`,    br:`${C.red}40`,    fg:C.red,    icon:"🚫" },
+    warn:  { bg:`${C.yellow}12`, br:`${C.yellow}40`, fg:C.yellow, icon:"⚠️" },
+    info:  { bg:`${C.blue}12`,   br:`${C.blue}30`,   fg:C.blue,   icon:"ℹ️" },
+  };
+  if (!issues?.length) {
+    return (
+      <div style={{ background:`${C.green}12`, border:`1px solid ${C.green}40`, borderRadius:10,
+        padding:"12px 16px", marginBottom:14, fontSize:13, color:C.green, fontWeight:700 }}>
+        ✅ Koi dikkat nahi — video public hai, na koi block, na restriction, na processing error
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginBottom:14 }}>
+      <div style={{ fontWeight:700, fontSize:13, color:C.text, marginBottom:8 }}>🩺 Video Health — {issues.length} cheez dhyan dene layak</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        {issues.map((it, i) => {
+          const s = style[it.level] || style.info;
+          return (
+            <div key={i} style={{ background:s.bg, border:`1px solid ${s.br}`, borderRadius:8,
+              padding:"9px 12px", fontSize:12, color:s.fg, display:"flex", gap:8 }}>
+              <span style={{ flexShrink:0 }}>{s.icon}</span>
+              <span style={{ lineHeight:1.5 }}>{it.text}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
   const [selChId,  setSelChId]  = useState(channels[0]?.id || "");
   const [ytData,   setYtData]   = useState({});
@@ -1806,6 +1912,10 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                 </div>
               )}
 
+              {/* Day-by-day report */}
+              <DailyTable rows={dailyChart} C={C} fmtNum={fmtNum} fmtHrs={fmtHrs} fmtMoney={fmtMoney}
+                title="📅 Din-ba-din Report — Channel" />
+
               {/* Channel breakdowns — countries / traffic / devices */}
               {(data.countries?.length || data.trafficSources?.length || data.devices?.length) ? (
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:18 }}>
@@ -1959,6 +2069,9 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                   ))}
                 </div>
 
+                {/* Health — koi dikkat to nahi */}
+                <VideoIssues issues={vidDetail.issues} C={C} />
+
                 {/* Revenue strip */}
                 <div style={{ background:`${C.yellow}10`, border:`1px solid ${C.yellow}30`, borderRadius:10,
                   padding:"12px 16px", marginBottom:14, display:"flex", gap:24, flexWrap:"wrap", alignItems:"center" }}>
@@ -1994,6 +2107,10 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                     </div>
                   );
                 })()}
+
+                {/* Day-by-day report for this video */}
+                <DailyTable rows={vidDetail.daily} C={C} fmtNum={fmtNum} fmtHrs={fmtHrs} fmtMoney={fmtMoney}
+                  title="📅 Din-ba-din — Is Video Ka" />
 
                 {/* Breakdowns */}
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>

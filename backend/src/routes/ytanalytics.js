@@ -80,6 +80,58 @@ async function ytaQuery(auth, params) {
   }
 }
 
+// Merge revenue rows into core daily rows by day, so a channel without the
+// monetary scope still gets its daily table (revenue columns just stay blank).
+function mergeDaily(coreRows, revRows) {
+  const revByDay = {};
+  (revRows || []).forEach(r => { revByDay[r.day] = r; });
+  return (coreRows || []).map(r => ({ ...r, ...(revByDay[r.day] || {}) }));
+}
+
+// Reads a video's Studio-style health flags: processing errors/warnings,
+// region blocks (how copyright blocks usually surface), upload rejection,
+// monetization-relevant restrictions.
+function buildVideoIssues(v) {
+  if (!v) return [];
+  const issues = [];
+  const st = v.status || {};
+  const cd = v.contentDetails || {};
+  const sg = v.suggestions || {};
+  const pd = v.processingDetails || {};
+
+  if (st.uploadStatus === "rejected")
+    issues.push({ level: "error", text: `Video reject hua: ${st.rejectionReason || "reason nahi mila"}` });
+  if (st.uploadStatus === "failed")
+    issues.push({ level: "error", text: `Upload fail: ${st.failureReason || "reason nahi mila"}` });
+  if (pd.processingStatus === "failed")
+    issues.push({ level: "error", text: "YouTube processing fail hui" });
+  if (pd.processingStatus === "processing")
+    issues.push({ level: "warn", text: "Abhi YouTube pe processing chal rahi hai" });
+
+  (sg.processingErrors || []).forEach(e => issues.push({ level: "error", text: `Processing error: ${e}` }));
+  (sg.processingWarnings || []).forEach(w => issues.push({ level: "warn", text: `Warning: ${w}` }));
+
+  const blocked = cd.regionRestriction?.blocked;
+  if (blocked?.length)
+    issues.push({ level: "error", text: `${blocked.length} countries mein blocked hai (${blocked.slice(0,8).join(", ")}${blocked.length>8?"…":""}) — aksar copyright claim ki wajah se` });
+  const allowed = cd.regionRestriction?.allowed;
+  if (allowed?.length)
+    issues.push({ level: "warn", text: `Sirf ${allowed.length} countries mein available hai` });
+
+  if (st.privacyStatus && st.privacyStatus !== "public")
+    issues.push({ level: "warn", text: `Privacy: ${st.privacyStatus} — public nahi hai` });
+  if (st.madeForKids)
+    issues.push({ level: "warn", text: "Made for Kids marked hai — ads/earning limited rehti hai" });
+  if (st.embeddable === false)
+    issues.push({ level: "warn", text: "Embedding off hai — external traffic kam aayega" });
+  if (cd.contentRating && Object.keys(cd.contentRating).length)
+    issues.push({ level: "warn", text: "Age restriction lagi hai — monetization par asar padta hai" });
+  if (cd.licensedContent)
+    issues.push({ level: "info", text: "Licensed content flag on hai (Content ID se match)" });
+
+  return issues;
+}
+
 const TRAFFIC_LABELS = {
   ADVERTISING: "Ads", ANNOTATION: "Annotations", CAMPAIGN_CARD: "Campaign cards",
   END_SCREEN: "End screens", EXT_URL: "External websites", NO_LINK_EMBEDDED: "Embedded players",
@@ -112,15 +164,21 @@ router.get("/:channelId/video/:videoId", async (req, res) => {
     const yt = createYoutube({ version: "v3", auth });
     const CORE = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,comments,shares,subscribersGained";
 
-    const [meta, totalsRows, dailyRows, countryRows, trafficRows, deviceRows, revenueRows] = await Promise.all([
-      yt.videos.list({ part: ["snippet", "statistics", "contentDetails"], id: [vid] }).catch(() => null),
+    const [meta, totalsRows, dailyCore, dailyRev, countryRows, trafficRows, deviceRows, revenueRows] = await Promise.all([
+      // suggestions/processingDetails = Studio-style health flags for owned videos
+      yt.videos.list({ part: ["snippet", "statistics", "contentDetails", "status", "processingDetails", "suggestions"], id: [vid] })
+        // suggestions/processingDetails need ownership; fall back to basic parts
+        .catch(() => yt.videos.list({ part: ["snippet", "statistics", "contentDetails", "status"], id: [vid] }).catch(() => null)),
       ytaQuery(auth, { startDate, endDate, metrics: CORE, filters }),
-      ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched,likes", dimensions: "day", sort: "day", filters }),
+      ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched,likes,subscribersGained", dimensions: "day", sort: "day", filters }),
+      // separate so a missing monetary scope doesn't wipe the whole daily table
+      ytaQuery(auth, { startDate, endDate, metrics: "estimatedRevenue,cpm", dimensions: "day", sort: "day", filters }),
       ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched", dimensions: "country", sort: "-views", maxResults: 15, filters }),
       ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched", dimensions: "insightTrafficSourceType", sort: "-views", filters }),
       ytaQuery(auth, { startDate, endDate, metrics: "views", dimensions: "deviceType", sort: "-views", filters }),
       ytaQuery(auth, { startDate, endDate, metrics: "estimatedRevenue,cpm,monetizedPlaybacks,adImpressions", filters }),
     ]);
+    const dailyRows = mergeDaily(dailyCore, dailyRev);
 
     const v = meta?.data?.items?.[0];
     res.json({
@@ -130,7 +188,12 @@ router.get("/:channelId/video/:videoId", async (req, res) => {
         lifetimeViews:    parseInt(v.statistics?.viewCount    || 0),
         lifetimeLikes:    parseInt(v.statistics?.likeCount    || 0),
         lifetimeComments: parseInt(v.statistics?.commentCount || 0),
+        privacy:          v.status?.privacyStatus,
+        uploadStatus:     v.status?.uploadStatus,
+        license:          v.status?.license,
+        madeForKids:      v.status?.madeForKids,
       } : { id: vid },
+      issues: buildVideoIssues(v),
       period: { startDate, endDate, days },
       totals:  totalsRows[0] || {},
       revenue: revenueRows[0] || null,
@@ -198,31 +261,37 @@ router.get("/:channelId", async (req, res) => {
     try {
       const yta = createYtAnalytics({ version: "v2", auth });
 
-      // Channel-level daily metrics
-      const aRes = await yta.reports.query({
-        ids:        "channel==MINE",
-        startDate,
-        endDate,
-        // NOTE: impressions/CTR Studio-only hain — API mein maangne se poori query 400 ho jaati hai
-        metrics:    "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments,shares,estimatedRevenue,cpm",
-        dimensions: "day",
-        sort:       "day",
-      });
+      // Channel-level daily metrics.
+      // NOTE: impressions/CTR Studio-only hain — API mein maangne se query 400 hoti hai.
+      // Revenue metrics need the monetary scope; if they fail, retry without them
+      // so a non-monetized channel still gets its full daily table.
+      const CORE_DAY = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments,shares";
+      let aRes;
+      try {
+        aRes = await yta.reports.query({
+          ids: "channel==MINE", startDate, endDate,
+          metrics: `${CORE_DAY},estimatedRevenue,cpm`, dimensions: "day", sort: "day",
+        });
+      } catch (revErr) {
+        console.warn("Channel daily with revenue failed, retrying without:", revErr.message);
+        aRes = await yta.reports.query({
+          ids: "channel==MINE", startDate, endDate,
+          metrics: CORE_DAY, dimensions: "day", sort: "day",
+        });
+      }
       analyticsData = aRes.data;
 
-      // Per-video metrics (top 10)
+      // Per-video metrics (top 10) — same revenue fallback
       if (videoList.length) {
         const top10ids = videoList.slice(0, 10).map(v => v.id).join(",");
-        const vRes = await yta.reports.query({
-          ids:        "channel==MINE",
-          startDate,
-          endDate,
-          metrics:    "views,estimatedMinutesWatched,averageViewDuration,likes,comments,shares,estimatedRevenue",
-          dimensions: "video",
-          filters:    `video==${top10ids}`,
-          sort:       "-views",
-          maxResults: 10,
+        const VID_CORE = "views,estimatedMinutesWatched,averageViewDuration,likes,comments,shares";
+        const vidParams = (metrics) => ({
+          ids: "channel==MINE", startDate, endDate, metrics,
+          dimensions: "video", filters: `video==${top10ids}`, sort: "-views", maxResults: 10,
         });
+        let vRes;
+        try   { vRes = await yta.reports.query(vidParams(`${VID_CORE},estimatedRevenue`)); }
+        catch { vRes = await yta.reports.query(vidParams(VID_CORE)); }
         const hdrs = vRes.data.columnHeaders?.map(h => h.name) || [];
         videoAnalytics = (vRes.data.rows || []).map(row => {
           const obj = {};
