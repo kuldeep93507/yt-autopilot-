@@ -8,6 +8,64 @@ import { logActivity } from "../services/log.service.js";
 const router = Router();
 router.use(requireAuth);
 
+function generateTemplateMetadata(topic, channelName, lang) {
+  const t = topic.trim() || "trending video";
+  const isHindi = (lang || "Hindi").toLowerCase().includes("hindi");
+
+  const titles = isHindi ? [
+    `${t} | ${channelName} 🔥`,
+    `${t} — Full Video | ${channelName}`,
+    `${t} | Best ${new Date().getFullYear()} | ${channelName}`,
+  ] : [
+    `${t} | ${channelName} 🔥`,
+    `${t} — Full Video | ${channelName}`,
+    `${t} | Best of ${new Date().getFullYear()}`,
+  ];
+  const title = titles[Math.floor(Math.random() * titles.length)].slice(0, 70);
+
+  const words = t.split(/\s+/).filter(w => w.length > 2);
+  const tagList = [...new Set([
+    ...words,
+    t,
+    channelName,
+    `${t} ${new Date().getFullYear()}`,
+    `${t} video`,
+    `${t} hindi`,
+    `best ${t}`,
+    `${t} full video`,
+    `${channelName} ${t}`,
+    `${t} latest`,
+    `trending ${t}`,
+    `${t} new`,
+    `top ${t}`,
+    `${t} viral`,
+  ])].slice(0, 15).join(", ");
+
+  const hashtags = words.slice(0, 5).map(w => `#${w.replace(/[^a-zA-Z0-9ऀ-ॿ]/g, "")}`).join(" ");
+
+  const desc = isHindi
+    ? `${title}\n\n` +
+      `Is video mein aapko milega ${t} ka complete experience! 🎬\n\n` +
+      `⏰ Timestamps:\n00:00 Intro\n01:00 ${t} Start\n05:00 Main Content\n\n` +
+      `📌 Is video mein:\n• ${t} full details\n• Best quality content\n• ${channelName} exclusive\n\n` +
+      `👍 Agar video pasand aaye toh LIKE karo, SHARE karo aur SUBSCRIBE karo!\n` +
+      `🔔 Bell icon dabao taaki koi video miss na ho!\n\n` +
+      `📺 Channel: ${channelName}\n` +
+      `${hashtags}\n\n` +
+      `© ${channelName} ${new Date().getFullYear()} — All Rights Reserved`
+    : `${title}\n\n` +
+      `Watch the complete ${t} experience! 🎬\n\n` +
+      `⏰ Timestamps:\n00:00 Intro\n01:00 ${t} Begins\n05:00 Main Content\n\n` +
+      `📌 In this video:\n• ${t} full details\n• Best quality content\n• ${channelName} exclusive\n\n` +
+      `👍 If you enjoyed this video, LIKE, SHARE and SUBSCRIBE!\n` +
+      `🔔 Hit the bell icon so you never miss an upload!\n\n` +
+      `📺 Channel: ${channelName}\n` +
+      `${hashtags}\n\n` +
+      `© ${channelName} ${new Date().getFullYear()} — All Rights Reserved`;
+
+  return { title, description: desc, tags: tagList, hashtags };
+}
+
 // POST /api/ai/metadata
 router.post("/metadata", async (req, res) => {
   const { channel_id, video_topic = "", provider = "auto" } = req.body;
@@ -21,7 +79,6 @@ router.post("/metadata", async (req, res) => {
 
   if (!ch) return res.status(404).json({ error: "Channel not found" });
 
-  // Agar video topic diya hai toh usse use karo, warna channel niche se
   const topicLine = video_topic.trim()
     ? `Video Topic: ${video_topic.trim()}`
     : `Channel Niche: ${ch.niche || "general"} (user ne koi topic nahi diya)`;
@@ -43,56 +100,72 @@ Respond EXACTLY in this JSON format (no extra text, no markdown):
 }`;
 
   let text = "";
+  let usedProvider = "template";
 
-  const useAnthropic = (provider === "anthropic" || provider === "auto") && process.env.ANTHROPIC_API_KEY;
-  const useGemini    = (provider === "gemini" || (provider === "auto" && !useAnthropic)) && process.env.GEMINI_API_KEY;
+  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+  const hasGemini    = !!process.env.GEMINI_API_KEY;
 
-  try {
-    if (useAnthropic) {
-      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const msg = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1500,
-        messages: [{ role: "user", content: prompt }],
-      });
-      text = msg.content[0].text;
-    } else if (useGemini) {
-      const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genai.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const result = await model.generateContent(prompt);
-      text = result.response.text();
-    } else {
-      return res.status(400).json({ error: "Koi AI key nahi — ANTHROPIC_API_KEY ya GEMINI_API_KEY .env mein daalo" });
-    }
-
-    // JSON parse karo
-    let parsed = {};
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-    } catch {
-      // Fallback: old regex style
-      parsed = {
-        title:       text.match(/"title"\s*:\s*"([^"]+)"/)?.[1]?.trim()       || "",
-        description: text.match(/"description"\s*:\s*"([\s\S]+?)(?=",\s*"tags)/)
-                         ?.[1]?.replace(/\\n/g, "\n")?.trim()                  || "",
-        tags:        text.match(/"tags"\s*:\s*"([^"]+)"/)?.[1]?.trim()         || "",
-        hashtags:    text.match(/"hashtags"\s*:\s*"([^"]+)"/)?.[1]?.trim()     || "",
-      };
-    }
-
-    await logActivity(channel_id, req.user.id, "done",
-      `AI metadata: "${parsed.title}" (topic: ${video_topic || "channel niche"})`);
-
-    res.json({
-      title:       parsed.title       || "",
-      description: parsed.description || "",
-      tags:        parsed.tags        || "",
-      hashtags:    parsed.hashtags    || "",
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  const providerOrder = [];
+  if (provider === "anthropic" && hasAnthropic) providerOrder.push("anthropic");
+  else if (provider === "gemini" && hasGemini) providerOrder.push("gemini");
+  else {
+    if (hasGemini)    providerOrder.push("gemini");
+    if (hasAnthropic) providerOrder.push("anthropic");
   }
+
+  let parsed = null;
+
+  for (const p of providerOrder) {
+    try {
+      if (p === "anthropic") {
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const msg = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1500,
+          messages: [{ role: "user", content: prompt }],
+        });
+        text = msg.content[0].text;
+      } else {
+        const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genai.getGenerativeModel({ model: "gemini-2.0-flash" });
+        const result = await model.generateContent(prompt);
+        text = result.response.text();
+      }
+      usedProvider = p;
+
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      } catch {
+        parsed = {
+          title:       text.match(/"title"\s*:\s*"([^"]+)"/)?.[1]?.trim()       || "",
+          description: text.match(/"description"\s*:\s*"([\s\S]+?)(?=",\s*"tags)/)?.[1]?.replace(/\\n/g, "\n")?.trim() || "",
+          tags:        text.match(/"tags"\s*:\s*"([^"]+)"/)?.[1]?.trim()         || "",
+          hashtags:    text.match(/"hashtags"\s*:\s*"([^"]+)"/)?.[1]?.trim()     || "",
+        };
+      }
+      break;
+    } catch (e) {
+      console.error(`AI provider "${p}" failed:`, e.message);
+    }
+  }
+
+  if (!parsed) {
+    console.log("All AI providers failed — using template fallback");
+    parsed = generateTemplateMetadata(video_topic, ch.name || "Channel", ch.lang);
+    usedProvider = "template";
+  }
+
+  await logActivity(channel_id, req.user.id, "done",
+    `AI metadata (${usedProvider}): "${parsed.title}" (topic: ${video_topic || "channel niche"})`);
+
+  res.json({
+    title:       parsed.title       || "",
+    description: parsed.description || "",
+    tags:        parsed.tags        || "",
+    hashtags:    parsed.hashtags    || "",
+    provider:    usedProvider,
+  });
 });
 
 export default router;

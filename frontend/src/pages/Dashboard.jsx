@@ -269,12 +269,18 @@ export default function Dashboard() {
   useSocket({
     "drive:new_file":    ({ item }) => { setDrive(p => [item, ...p]); toast("📁 Nayi video detect hui Drive mein!"); },
     "queue:uploading":   ({ id })   => setQueue(p => p.map(v => v.id===id ? {...v,status:"uploading"} : v)),
+    "queue:upload_progress": ({ id, pct, bytesUploaded, fileSize }) => {
+      setQueue(p => p.map(v => v.id===id ? {...v, upload_pct: pct} : v));
+      setUpState(p => ({...p, fileProgress:`YouTube pe upload: ${pct}% (${(bytesUploaded/1e9).toFixed(1)}/${(fileSize/1e9).toFixed(1)} GB)`}));
+    },
     "queue:upload_done": ({ id, yt_video_id }) => {
-      setQueue(p => p.map(v => v.id===id ? {...v,status:"done",yt_video_id} : v));
+      setQueue(p => p.map(v => v.id===id ? {...v,status:"done",yt_video_id, upload_pct:100} : v));
+      setUpState(p => ({...p, fileUploading:false, fileProgress:null}));
       toast("✅ Video YouTube pe live!");
     },
     "queue:upload_error": ({ id, error }) => {
       setQueue(p => p.map(v => v.id===id ? {...v,status:"error",error_msg:error} : v));
+      setUpState(p => ({...p, fileUploading:false, fileProgress:null}));
       toast("❌ Upload fail: " + error, "error");
     },
   });
@@ -324,6 +330,9 @@ export default function Dashboard() {
       if (upState.schedTime) fd.append("sched_time", upState.schedTime);
       const { data } = await api.post("/upload/file", fd, {
         headers: { "Content-Type":"multipart/form-data" },
+        timeout: 0,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
         onUploadProgress: (e) => {
           const pct = Math.round((e.loaded / e.total) * 100);
           setUpState(p => ({...p, fileProgress:`Uploading ${pct}%`}));
@@ -1498,24 +1507,80 @@ function TeamMemberCard({ m, currentUser, C, onRoleChange, onToggleActive, onDel
 
 
 // ── Analytics Tab — Real YouTube Data ────────────────────────────────────
+// Horizontal breakdown bar list — countries / traffic sources / devices
+function BreakdownList({ title, icon, rows, labelKey, C, fmtNum, labelMap }) {
+  if (!rows?.length) return null;
+  const maxV = Math.max(...rows.map(r => Number(r.views || 0)), 1);
+  const totalV = rows.reduce((s, r) => s + Number(r.views || 0), 0) || 1;
+  const countryName = (code) => {
+    try { return new Intl.DisplayNames(["en"], { type: "region" }).of(code) || code; }
+    catch { return code; }
+  };
+  return (
+    <div style={{ background:C.card, borderRadius:12, padding:"16px 18px", border:`1px solid ${C.border}` }}>
+      <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>{icon} {title}</div>
+      {rows.slice(0, 10).map((r, i) => {
+        const raw = r[labelKey];
+        const label = labelMap === "country" ? countryName(raw) : (r.label || raw);
+        const v = Number(r.views || 0);
+        return (
+          <div key={raw || i} style={{ marginBottom: 8 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+              <span style={{ color:C.text, fontWeight:600 }}>{label}</span>
+              <span style={{ color:C.muted }}>{fmtNum(v)} ({Math.round(v/totalV*100)}%)</span>
+            </div>
+            <div style={{ height:6, background:C.surface, borderRadius:3, overflow:"hidden" }}>
+              <div style={{ width:`${Math.max(2, Math.round(v/maxV*100))}%`, height:"100%",
+                background:`linear-gradient(90deg, ${C.blue}, ${C.cyan})`, borderRadius:3 }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
   const [selChId,  setSelChId]  = useState(channels[0]?.id || "");
-  const [ytData,   setYtData]   = useState({});   // chId → analytics response
+  const [ytData,   setYtData]   = useState({});
   const [loading,  setLoading]  = useState({});
+  const [errors,   setErrors]   = useState({});  // chId → "token_expired" | null
   const [days,     setDays]     = useState(28);
+  const [vidDetail, setVidDetail] = useState(null);   // deep-dive data
+  const [vidLoading, setVidLoading] = useState(false);
 
   const fmtNum   = (n) => Number(n||0).toLocaleString("en-IN");
   const fmtHrs   = (m) => { const h=Math.floor((m||0)/60); const mn=Math.round((m||0)%60); return h>0?`${h}h ${mn}m`:`${mn}m`; };
   const fmtMoney = (v) => v != null ? `$${Number(v).toFixed(2)}` : "N/A";
   const fmtDur   = (s) => { const m=Math.floor((s||0)/60); const sec=Math.round((s||0)%60); return `${m}:${String(sec).padStart(2,"0")}`; };
 
+  // Studio-style per-video deep dive
+  const openVideoDetail = async (videoId) => {
+    setVidLoading(true);
+    setVidDetail({ videoId });  // open modal in loading state
+    try {
+      const { data } = await api.get(`/ytanalytics/${selChId}/video/${videoId}?days=${days}`);
+      setVidDetail(data);
+    } catch (e) {
+      toast("Video analytics error: " + (e.response?.data?.error || e.message), "error");
+      setVidDetail(null);
+    }
+    setVidLoading(false);
+  };
+
   const loadYtAnalytics = async (chId, d) => {
     setLoading(p => ({...p,[chId]:true}));
+    setErrors(p => ({...p,[chId]:null}));
     try {
-      const { data } = await api.get(`/analytics/youtube/${chId}?days=${d||days}`);
+      const { data } = await api.get(`/ytanalytics/${chId}?days=${d||days}`);
       setYtData(p => ({...p,[chId]:data}));
     } catch(e) {
-      toast("YouTube Analytics error: " + (e.response?.data?.error || e.message), "error");
+      const errData = e.response?.data;
+      if (errData?.error === "token_expired") {
+        setErrors(p => ({...p,[chId]:"token_expired"}));
+      } else {
+        toast("Analytics error: " + (errData?.error || e.message), "error");
+      }
     }
     setLoading(p => ({...p,[chId]:false}));
   };
@@ -1571,6 +1636,7 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
               <div style={{ fontWeight:700, fontSize:13, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{ch.name}</div>
               <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{ch.niche||"No niche"}</div>
               {!ch.refresh_token && <div style={{ fontSize:10, color:C.red, marginTop:3 }}>⚠ OAuth missing</div>}
+              {ch.refresh_token && errors[ch.id] === "token_expired" && <div style={{ fontSize:10, color:C.yellow, marginTop:3 }}>🔑 Token expired</div>}
               {loading[ch.id] && <div style={{ fontSize:10, color:C.cyan, marginTop:3 }}>⏳ Loading...</div>}
             </div>
           ))}
@@ -1603,7 +1669,49 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
             </div>
           )}
 
-          {!loading[selChId] && !data && (
+          {/* Token expired error */}
+          {!loading[selChId] && errors[selChId] === "token_expired" && (
+            <div style={{ background:`${C.red}15`, border:`1px solid ${C.red}50`, borderRadius:12, padding:28, textAlign:"center" }}>
+              <div style={{ fontSize:36, marginBottom:12 }}>🔑</div>
+              <div style={{ fontWeight:900, fontSize:16, color:C.red, marginBottom:8 }}>
+                Refresh Token Expire Ho Gaya
+              </div>
+              <div style={{ fontSize:13, color:C.muted, marginBottom:20, lineHeight:1.7 }}>
+                <strong style={{color:C.text}}>{channels.find(c=>c.id===selChId)?.name}</strong> channel ka OAuth token expire ho gaya hai.<br/>
+                Naya token generate karo aur Channels tab mein update karo.
+              </div>
+
+              {/* Steps */}
+              <div style={{ background:C.surface, borderRadius:10, padding:16, textAlign:"left", marginBottom:20, fontSize:12, color:C.dim, lineHeight:2 }}>
+                <div style={{fontWeight:700, color:C.text, marginBottom:6}}>Steps — Naya Token Generate Karo:</div>
+                <div>1️⃣  <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" style={{color:C.blue}}>OAuth Playground</a> kholo</div>
+                <div>2️⃣  ⚙️ icon → <strong style={{color:C.cyan}}>"Use your own OAuth credentials"</strong> tick karo</div>
+                <div>3️⃣  Client ID aur Secret daalo (Channels tab se dekho)</div>
+                <div>4️⃣  Ye scope select karo:</div>
+                <div style={{marginLeft:20, fontFamily:"monospace", fontSize:11, color:C.cyan}}>
+                  https://www.googleapis.com/auth/youtube<br/>
+                  https://www.googleapis.com/auth/yt-analytics.readonly<br/>
+                  https://www.googleapis.com/auth/yt-analytics-monetary.readonly
+                </div>
+                <div>5️⃣  <strong style={{color:C.yellow}}>Authorize APIs</strong> → channel ka Google account select karo</div>
+                <div>6️⃣  <strong style={{color:C.green}}>"Exchange authorization code for tokens"</strong> → refresh_token copy karo</div>
+                <div>7️⃣  Channels tab → Configure → Refresh Token field mein paste karo → Save</div>
+              </div>
+
+              <div style={{display:"flex", gap:10, justifyContent:"center"}}>
+                <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer"
+                  style={{ padding:"10px 20px", background:C.blue, borderRadius:8, color:"#fff", fontWeight:700, fontSize:13, textDecoration:"none" }}>
+                  🔑 OAuth Playground Kholo
+                </a>
+                <button onClick={() => loadYtAnalytics(selChId, days)}
+                  style={{ padding:"10px 20px", background:C.surface, border:`1px solid ${C.border}`, borderRadius:8, color:C.muted, fontWeight:700, fontSize:13, cursor:"pointer" }}>
+                  🔄 Retry
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!loading[selChId] && !data && !errors[selChId] && (
             <div style={{ textAlign:"center", padding:80, color:C.muted }}>
               <div style={{ fontSize:40, marginBottom:12 }}>📊</div>
               <div style={{ fontWeight:700 }}>Channel select karo analytics dekhne ke liye</div>
@@ -1654,13 +1762,14 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                 ))}
               </div>
 
-              {/* Second row KPIs */}
+              {/* Second row KPIs — note: thumbnail Impressions/CTR sirf YouTube
+                  Studio mein milte hain, API unhe deta hi nahi */}
               <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:18 }}>
                 {[
-                  { label:"Impressions",    val:fmtNum(totals.impressions),         color:C.purple, icon:"📢" },
-                  { label:"CTR",            val:`${(totals.avgCTR||0).toFixed(1)}%`, color:C.pink,   icon:"🎯" },
                   { label:"Avg View Dur",   val:fmtDur(totals.avgViewDurationSec),  color:C.cyan,   icon:"⏱" },
                   { label:"Likes",          val:fmtNum(totals.likes),               color:C.red,    icon:"👍" },
+                  { label:"Comments",       val:fmtNum(totals.comments),            color:C.purple, icon:"💬" },
+                  { label:"Shares",         val:fmtNum(totals.shares),              color:C.pink,   icon:"🔗" },
                 ].map(s => (
                   <div key={s.label} style={{ background:C.surface, borderRadius:10, padding:"12px 14px",
                     border:`1px solid ${s.color}30` }}>
@@ -1697,19 +1806,33 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                 </div>
               )}
 
+              {/* Channel breakdowns — countries / traffic / devices */}
+              {(data.countries?.length || data.trafficSources?.length || data.devices?.length) ? (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:18 }}>
+                  <BreakdownList title="Top Countries" icon="🌍" rows={data.countries}
+                    labelKey="country" labelMap="country" C={C} fmtNum={fmtNum} />
+                  <BreakdownList title="Traffic Sources" icon="🔀" rows={data.trafficSources}
+                    labelKey="insightTrafficSourceType" C={C} fmtNum={fmtNum} />
+                  <BreakdownList title="Devices" icon="📱" rows={data.devices}
+                    labelKey="deviceType" C={C} fmtNum={fmtNum} />
+                </div>
+              ) : null}
+
               {/* Per-video analytics (from Analytics API) */}
               {videoAnalytics.length > 0 && (
                 <div style={{ marginBottom:18 }}>
-                  <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>🎬 Top Videos — Analytics (Last {days} days)</div>
+                  <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>🎬 Top Videos — Analytics (Last {days} days) <span style={{fontSize:11, color:C.muted, fontWeight:500}}>— kisi bhi video pe click karo full breakdown ke liye</span></div>
                   <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
                     {videoAnalytics.map((v, i) => (
-                      <div key={v.video||i} style={{ background:C.card, borderRadius:10, padding:"12px 16px",
+                      <div key={v.video||i} onClick={() => openVideoDetail(v.video)}
+                        style={{ background:C.card, borderRadius:10, padding:"12px 16px", cursor:"pointer",
                         border:`1px solid ${C.border}`, display:"flex", alignItems:"center", gap:12 }}>
                         {v.thumbnail && (
                           <img src={v.thumbnail} alt="" style={{ width:80, height:45, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
                         )}
                         <div style={{ flex:1, minWidth:0 }}>
                           <a href={`https://youtu.be/${v.video}`} target="_blank" rel="noreferrer"
+                            onClick={e => e.stopPropagation()}
                             style={{ fontWeight:700, fontSize:13, color:C.text, textDecoration:"none",
                               display:"block", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                             {v.title}
@@ -1740,13 +1863,15 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
                   <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.text }}>🎬 Videos (YouTube Data API)</div>
                   <div style={{ display:"flex", flexDirection:"column", gap:8, maxHeight:500, overflowY:"auto" }}>
                     {videos.slice(0, 20).map((v, i) => (
-                      <div key={v.id} style={{ background:C.card, borderRadius:10, padding:"12px 16px",
+                      <div key={v.id} onClick={() => openVideoDetail(v.id)}
+                        style={{ background:C.card, borderRadius:10, padding:"12px 16px", cursor:"pointer",
                         border:`1px solid ${C.border}`, display:"flex", alignItems:"center", gap:12 }}>
                         {v.thumbnail && (
                           <img src={v.thumbnail} alt="" style={{ width:80, height:45, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
                         )}
                         <div style={{ flex:1, minWidth:0 }}>
                           <a href={`https://youtu.be/${v.id}`} target="_blank" rel="noreferrer"
+                            onClick={e => e.stopPropagation()}
                             style={{ fontWeight:700, fontSize:13, color:C.text, textDecoration:"none",
                               display:"block", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                             {v.title}
@@ -1780,6 +1905,120 @@ function AnalyticsTab({ channels, summary, loadSummary, C, toast }) {
           )}
         </div>
       </div>
+
+      {/* ── Per-video deep dive modal (Studio-style) ── */}
+      {vidDetail && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:9999,
+          display:"flex", alignItems:"flex-start", justifyContent:"center", overflowY:"auto", padding:"40px 16px" }}
+          onClick={e => { if (e.target === e.currentTarget) setVidDetail(null); }}>
+          <div style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:16,
+            width:"100%", maxWidth:860, padding:24, boxShadow:"0 20px 80px rgba(0,0,0,0.7)" }}>
+
+            {vidLoading ? (
+              <div style={{ textAlign:"center", padding:60, color:C.cyan }}>
+                <div style={{ fontSize:32, marginBottom:10 }}>⏳</div>
+                Video ka poora analytics fetch ho raha hai...
+              </div>
+            ) : (
+              <>
+                {/* Header */}
+                <div style={{ display:"flex", gap:14, alignItems:"flex-start", marginBottom:18 }}>
+                  {vidDetail.video?.thumbnail && (
+                    <img src={vidDetail.video.thumbnail} alt="" style={{ width:140, height:79, objectFit:"cover", borderRadius:8, flexShrink:0 }} />
+                  )}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontWeight:900, fontSize:16, color:C.text, lineHeight:1.4 }}>{vidDetail.video?.title || "Video"}</div>
+                    <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>
+                      {vidDetail.video?.published ? "📅 " + new Date(vidDetail.video.published).toLocaleDateString("en-IN", {day:"2-digit",month:"short",year:"numeric"}) : ""}
+                      &nbsp;•&nbsp; Lifetime: {fmtNum(vidDetail.video?.lifetimeViews)} views, {fmtNum(vidDetail.video?.lifetimeLikes)} likes
+                      &nbsp;•&nbsp; Neeche ka data: last {vidDetail.period?.days || days} days
+                    </div>
+                  </div>
+                  <button onClick={() => setVidDetail(null)}
+                    style={{ background:C.surface, border:`1px solid ${C.border2}`, borderRadius:8,
+                      color:C.muted, fontSize:16, padding:"4px 12px", cursor:"pointer", flexShrink:0 }}>✕</button>
+                </div>
+
+                {/* KPI grid */}
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:14 }}>
+                  {[
+                    { l:"Views",        v:fmtNum(vidDetail.totals?.views),                          c:C.blue,   i:"👁" },
+                    { l:"Watch Time",   v:fmtHrs(vidDetail.totals?.estimatedMinutesWatched),        c:C.cyan,   i:"⏱" },
+                    { l:"Avg Duration", v:fmtDur(vidDetail.totals?.averageViewDuration),            c:C.purple, i:"📊" },
+                    { l:"Avg Watched",  v:`${Number(vidDetail.totals?.averageViewPercentage||0).toFixed(1)}%`, c:C.pink, i:"📈" },
+                    { l:"Likes",        v:fmtNum(vidDetail.totals?.likes),                          c:C.red,    i:"👍" },
+                    { l:"Comments",     v:fmtNum(vidDetail.totals?.comments),                       c:C.green,  i:"💬" },
+                    { l:"Shares",       v:fmtNum(vidDetail.totals?.shares),                         c:C.yellow, i:"🔗" },
+                    { l:"Subs Gained",  v:"+"+fmtNum(vidDetail.totals?.subscribersGained),          c:C.green,  i:"👥" },
+                  ].map(s => (
+                    <div key={s.l} style={{ background:C.surface, borderRadius:10, padding:"10px 12px", border:`1px solid ${s.c}30` }}>
+                      <div style={{ fontSize:14 }}>{s.i}</div>
+                      <div style={{ fontSize:17, fontWeight:900, color:s.c }}>{s.v}</div>
+                      <div style={{ fontSize:10, color:C.muted }}>{s.l}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Revenue strip */}
+                <div style={{ background:`${C.yellow}10`, border:`1px solid ${C.yellow}30`, borderRadius:10,
+                  padding:"12px 16px", marginBottom:14, display:"flex", gap:24, flexWrap:"wrap", alignItems:"center" }}>
+                  <div style={{ fontWeight:700, fontSize:13, color:C.yellow }}>💰 Earnings (last {vidDetail.period?.days || days}d)</div>
+                  {vidDetail.revenue ? (<>
+                    <span style={{ fontSize:13, color:C.text }}>Revenue: <strong style={{color:C.yellow}}>{fmtMoney(vidDetail.revenue.estimatedRevenue)}</strong></span>
+                    {vidDetail.revenue.cpm != null && <span style={{ fontSize:13, color:C.text }}>CPM: <strong>{fmtMoney(vidDetail.revenue.cpm)}</strong></span>}
+                    {vidDetail.revenue.monetizedPlaybacks != null && <span style={{ fontSize:13, color:C.text }}>Monetized plays: <strong>{fmtNum(vidDetail.revenue.monetizedPlaybacks)}</strong></span>}
+                    {vidDetail.revenue.adImpressions != null && <span style={{ fontSize:13, color:C.text }}>Ad impressions: <strong>{fmtNum(vidDetail.revenue.adImpressions)}</strong></span>}
+                  </>) : (
+                    <span style={{ fontSize:12, color:C.muted }}>Revenue data nahi mila — channel monetized nahi hai ya is period mein earning 0 hai</span>
+                  )}
+                </div>
+
+                {/* Daily views mini chart */}
+                {vidDetail.daily?.length > 0 && (() => {
+                  const maxV = Math.max(...vidDetail.daily.map(d => Number(d.views||0)), 1);
+                  return (
+                    <div style={{ background:C.card, borderRadius:10, padding:"14px 16px", marginBottom:14, border:`1px solid ${C.border}` }}>
+                      <div style={{ fontWeight:700, fontSize:13, marginBottom:10, color:C.text }}>📈 Daily Views</div>
+                      <div style={{ display:"flex", alignItems:"flex-end", gap:2, height:60, overflowX:"auto" }}>
+                        {vidDetail.daily.map((row, i) => (
+                          <div key={i} title={`${row.day}: ${fmtNum(row.views)} views`} style={{
+                            flex:"0 0 auto", width: vidDetail.daily.length > 60 ? 5 : vidDetail.daily.length > 30 ? 9 : 14,
+                            height: Math.max(3, Math.round((Number(row.views||0)/maxV)*56)),
+                            borderRadius:"2px 2px 0 0", background:`linear-gradient(180deg, ${C.blue}, ${C.cyan})`, opacity:0.85 }} />
+                        ))}
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:C.muted, marginTop:4 }}>
+                        <span>{vidDetail.daily[0]?.day}</span>
+                        <span>{vidDetail.daily[vidDetail.daily.length-1]?.day}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Breakdowns */}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                  <BreakdownList title="Top Countries" icon="🌍" rows={vidDetail.countries}
+                    labelKey="country" labelMap="country" C={C} fmtNum={fmtNum} />
+                  <BreakdownList title="Traffic Sources" icon="🔀" rows={vidDetail.trafficSources}
+                    labelKey="insightTrafficSourceType" C={C} fmtNum={fmtNum} />
+                  <BreakdownList title="Devices" icon="📱" rows={vidDetail.devices}
+                    labelKey="deviceType" C={C} fmtNum={fmtNum} />
+                </div>
+
+                {(!vidDetail.countries?.length && !vidDetail.trafficSources?.length) && (
+                  <div style={{ marginTop:8, fontSize:12, color:C.muted, textAlign:"center", padding:12 }}>
+                    Is period mein is video pe zyada activity nahi hai — period badhao (90d) ya baad mein dekho
+                  </div>
+                )}
+
+                <div style={{ marginTop:14, fontSize:11, color:C.muted }}>
+                  ℹ️ Thumbnail Impressions/CTR sirf YouTube Studio app mein milte hain — Google unhe API se nahi deta, isliye yahan nahi dikh sakte. Baaki sab (views, watch time, earning, country, traffic, device) real-time API data hai.
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1793,7 +2032,7 @@ function SettingsTab({ user, toast }) {
     setSaving(true);
     try {
       await api.post("/settings/keys", keys);
-      toast("Keys save ho gayi — backend restart karo (START.bat)");
+      toast("✅ Keys save ho gayi — turant kaam karegi, restart ki zarurat nahi!");
     } catch(e) {
       toast(e.response?.data?.error||"Error","error");
     }
@@ -2084,7 +2323,7 @@ function BulkScheduleTab({ channels, queue, setQueue, user, toast, approveItem, 
                   {item.approved && item.status==="queued" && (
                     <Btn small color={C.blue} onClick={() => triggerUpload(item.id)}>▶ Upload</Btn>
                   )}
-                  {item.status==="uploading" && <Badge color={C.cyan}>🔄 Uploading…</Badge>}
+                  {item.status==="uploading" && <Badge color={C.cyan}>🔄 {item.upload_pct != null ? `Uploading ${item.upload_pct}%` : "Uploading…"}</Badge>}
                   {item.status==="done"      && <Badge color={C.green}>✅ Done</Badge>}
                   {item.status==="error"     && <Badge color={C.red}>❌ Error</Badge>}
                 </div>

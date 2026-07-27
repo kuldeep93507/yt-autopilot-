@@ -2,7 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { youtube as createYoutube } from "@googleapis/youtube";
 import { OAuth2Client } from "google-auth-library";
-import { createReadStream } from "fs";
+import { createReadStream, statSync } from "fs";
 import { unlink } from "fs/promises";
 import { tmpdir } from "os";
 import supabase from "../db/supabase.js";
@@ -88,6 +88,21 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
         if (sched_date && sched_time)
           publishAt = new Date(`${sched_date}T${sched_time}:00+05:30`).toISOString();
 
+        const fileSize = statSync(tempPath).size;
+        const fileStream = createReadStream(tempPath);
+
+        // Track upload progress via stream bytes read
+        let bytesUploaded = 0;
+        let lastPct = 0;
+        fileStream.on("data", (chunk) => {
+          bytesUploaded += chunk.length;
+          const pct = Math.round((bytesUploaded / fileSize) * 100);
+          if (pct > lastPct) {
+            lastPct = pct;
+            io.emit("queue:upload_progress", { id: qItem?.id, pct, bytesUploaded, fileSize });
+          }
+        });
+
         const uploadRes = await yt.videos.insert({
           part: ["snippet", "status"],
           requestBody: {
@@ -105,19 +120,29 @@ router.post("/file", requireRole("admin", "manager", "uploader"),
           },
           media: {
             mimeType: req.file.mimetype,
-            body: createReadStream(tempPath),
+            body: fileStream,
+          },
+        }, {
+          onUploadProgress: (evt) => {
+            const pct = Math.round((evt.bytesRead / fileSize) * 100);
+            if (pct > lastPct) {
+              lastPct = pct;
+              io.emit("queue:upload_progress", { id: qItem?.id, pct, bytesUploaded: evt.bytesRead, fileSize });
+            }
           },
         });
 
         const ytVideoId = uploadRes.data.id;
-        await trackQuotaUsage(channel_id, ch.name, 1600); // videos.insert quota cost
+        await trackQuotaUsage(channel_id, ch.name, 1600);
         await supabase.from("upload_queue").update({
           status: "done", yt_video_id: ytVideoId, done_at: new Date().toISOString(),
         }).eq("id", qItem?.id);
 
         await logActivity(channel_id, req.user.id, "done", `Uploaded: "${title}" → https://youtu.be/${ytVideoId}`);
         io.emit("queue:upload_done", { id: qItem?.id, yt_video_id: ytVideoId });
+        console.log(`✅ Upload done: "${title}" → https://youtu.be/${ytVideoId} (${(fileSize/1e9).toFixed(1)}GB)`);
       } catch (err) {
+        console.error(`❌ Upload failed: "${title}" →`, err.message);
         await supabase.from("upload_queue").update({
           status: "error", error_msg: err.message,
         }).eq("id", qItem?.id);

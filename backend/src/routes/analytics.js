@@ -112,6 +112,13 @@ router.get("/youtube/:channelId", async (req, res) => {
       console.warn("YouTube Analytics API error:", analyticsErr.message);
     }
 
+    // 3b. Channel-level breakdowns — countries, traffic sources, devices
+    const [chCountries, chTraffic, chDevices] = await Promise.all([
+      ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched", dimensions: "country", sort: "-views", maxResults: 15 }),
+      ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched", dimensions: "insightTrafficSourceType", sort: "-views" }),
+      ytaQuery(auth, { startDate, endDate, metrics: "views", dimensions: "deviceType", sort: "-views" }),
+    ]);
+
     // 4. Per-video analytics (top 10 by views)
     let videoAnalytics = [];
     if (videoList.length && analyticsData !== null) {
@@ -197,11 +204,105 @@ router.get("/youtube/:channelId", async (req, res) => {
       dailyChart: dailyRows,        // for chart rendering
       videos:     videoList,        // basic video list (views, likes, etc.)
       videoAnalytics,               // per-video analytics for top 10
+      countries:  chCountries,
+      trafficSources: chTraffic.map(r => ({
+        ...r,
+        label: TRAFFIC_LABELS[r.insightTrafficSourceType] || r.insightTrafficSourceType,
+      })),
+      devices:    chDevices,
       analyticsAvailable: analyticsData !== null,
     });
 
   } catch (err) {
     console.error("YouTube analytics error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper: run one Analytics API query tolerantly — returns rows as objects or []
+async function ytaQuery(auth, params) {
+  try {
+    const yta = createYtAnalytics({ version: "v2", auth });
+    const r = await yta.reports.query({ ids: "channel==MINE", ...params });
+    const headers = r.data.columnHeaders?.map(h => h.name) || [];
+    return (r.data.rows || []).map(row => {
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = row[i]; });
+      return obj;
+    });
+  } catch (e) {
+    console.warn("YTA query failed:", params.dimensions || params.metrics, "-", e.message);
+    return [];
+  }
+}
+
+// Readable labels for traffic source types (API returns enum codes)
+const TRAFFIC_LABELS = {
+  ADVERTISING: "Ads", ANNOTATION: "Annotations", CAMPAIGN_CARD: "Campaign cards",
+  END_SCREEN: "End screens", EXT_URL: "External websites", NO_LINK_EMBEDDED: "Embedded (no link)",
+  NO_LINK_OTHER: "Direct / unknown", NOTIFICATION: "Notifications", PLAYLIST: "Playlists",
+  PROMOTED: "Promoted", RELATED_VIDEO: "Suggested videos", SHORTS: "Shorts feed",
+  SOUND_PAGE: "Sound page", SUBSCRIBER: "Subscriptions feed", YT_CHANNEL: "Channel pages",
+  YT_OTHER_PAGE: "Other YouTube pages", YT_SEARCH: "YouTube Search", VIDEO_REMIXES: "Remixes",
+  LIVE_REDIRECT: "Live redirect", HASHTAGS: "Hashtag pages", PRODUCT_PAGE: "Product pages",
+  IMMERSIVE_LIVE: "Immersive live", PODCASTS: "Podcasts",
+};
+
+// ── GET /api/analytics/youtube/:channelId/video/:videoId?days=28 ────────────
+// Full per-video deep dive — Studio-style: totals, daily trend, countries,
+// traffic sources, devices, revenue. Each section is fetched independently so
+// one failing report (e.g. revenue on a non-monetized channel) doesn't blank
+// the rest.
+router.get("/youtube/:channelId/video/:videoId", async (req, res) => {
+  const { data: ch } = await supabase
+    .from("channels").select("*").eq("id", req.params.channelId).single();
+  if (!ch)               return res.status(404).json({ error: "Channel nahi mila" });
+  if (!ch.refresh_token) return res.status(400).json({ error: "Channel mein OAuth token nahi hai" });
+
+  const vid       = req.params.videoId;
+  const days      = Math.min(parseInt(req.query.days || "28"), 365);
+  const endDate   = new Date().toISOString().slice(0, 10);
+  const startDate = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const auth      = buildOAuth(ch);
+  const filters   = `video==${vid}`;
+
+  try {
+    // Video metadata (lifetime stats) via Data API
+    const yt = createYoutube({ version: "v3", auth });
+    const metaPromise = yt.videos.list({ part: ["snippet", "statistics", "contentDetails"], id: [vid] });
+
+    const CORE = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,comments,shares,subscribersGained";
+    const [meta, totalsRows, dailyRows, countryRows, trafficRows, deviceRows, revenueRows] = await Promise.all([
+      metaPromise,
+      ytaQuery(auth, { startDate, endDate, metrics: CORE, filters }),
+      ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched,likes", dimensions: "day", sort: "day", filters }),
+      ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched", dimensions: "country", sort: "-views", maxResults: 15, filters }),
+      ytaQuery(auth, { startDate, endDate, metrics: "views,estimatedMinutesWatched", dimensions: "insightTrafficSourceType", sort: "-views", filters }),
+      ytaQuery(auth, { startDate, endDate, metrics: "views", dimensions: "deviceType", sort: "-views", filters }),
+      ytaQuery(auth, { startDate, endDate, metrics: "estimatedRevenue,cpm,monetizedPlaybacks,adImpressions", filters }),
+    ]);
+
+    const v = meta.data.items?.[0];
+    res.json({
+      video: v ? {
+        id: vid, title: v.snippet?.title, thumbnail: v.snippet?.thumbnails?.medium?.url,
+        published: v.snippet?.publishedAt, duration: v.contentDetails?.duration,
+        lifetimeViews: parseInt(v.statistics?.viewCount || 0),
+        lifetimeLikes: parseInt(v.statistics?.likeCount || 0),
+        lifetimeComments: parseInt(v.statistics?.commentCount || 0),
+      } : { id: vid },
+      period: { startDate, endDate, days },
+      totals: totalsRows[0] || {},
+      revenue: revenueRows[0] || null,   // null => not monetized or no rev data
+      daily: dailyRows,
+      countries: countryRows,
+      trafficSources: trafficRows.map(r => ({
+        ...r,
+        label: TRAFFIC_LABELS[r.insightTrafficSourceType] || r.insightTrafficSourceType,
+      })),
+      devices: deviceRows,
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

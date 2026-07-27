@@ -17,8 +17,9 @@ import aiRoutes      from "./routes/ai.js";
 import driveRoutes   from "./routes/drive.js";
 import uploadRoutes  from "./routes/upload.js";
 import teamRoutes    from "./routes/team.js";
-import analyticsRoutes from "./routes/analytics.js";
-import trendsRoutes  from "./routes/trends.js";
+import analyticsRoutes   from "./routes/analytics.js";
+import ytanalyticsRoutes from "./routes/ytanalytics.js";
+import trendsRoutes      from "./routes/trends.js";
 
 import { startDriveWatcher } from "./services/drive.service.js";
 import { setupWorker }       from "./workers/upload.worker.js";
@@ -33,6 +34,8 @@ const server = createServer(app);
 // ── CORS origins ───────────────────────────────────────────────────────────
 const allowedOrigins = [
   "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:5175",
   "http://localhost:4173",
   "https://yt-autopilot-indol.vercel.app",
   ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
@@ -68,8 +71,9 @@ app.use("/api/ai",        aiRoutes);
 app.use("/api/drive",     driveRoutes);
 app.use("/api/upload",    uploadRoutes);
 app.use("/api/team",      teamRoutes);
-app.use("/api/analytics", analyticsRoutes);
-app.use("/api/trends",    trendsRoutes);
+app.use("/api/analytics",   analyticsRoutes);
+app.use("/api/ytanalytics", ytanalyticsRoutes);
+app.use("/api/trends",      trendsRoutes);
 
 app.get("/api/health", async (_req, res) => {
   const checks = { server: "ok", db: "unknown" };
@@ -114,6 +118,9 @@ process.on("unhandledRejection", (err) => {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
+server.requestTimeout = 0;
+server.headersTimeout = 0;
+server.keepAliveTimeout = 0;
 server.listen(PORT, async () => {
   console.log(`\n🚀 YT AutoPilot backend running on http://localhost:${PORT}`);
   try { await setupWorker(); }       catch(e) { console.error("Worker setup error:", e.message); }
