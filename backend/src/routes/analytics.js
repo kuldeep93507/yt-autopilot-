@@ -99,7 +99,10 @@ router.get("/youtube/:channelId", async (req, res) => {
         ids:         "channel==MINE",
         startDate,
         endDate,
-        metrics:     "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments,shares,estimatedRevenue,cpm,impressions,impressionClickThroughRate",
+        // NOTE: "impressions"/"impressionClickThroughRate" are NOT valid API
+        // metrics (Studio-only) — including them 400s the whole query and
+        // zeroes out the entire analytics tab.
+        metrics:     "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments,shares,estimatedRevenue,cpm",
         dimensions:  "day",
         sort:        "day",
       });
